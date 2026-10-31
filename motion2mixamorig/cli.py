@@ -224,7 +224,17 @@ def preflight(args: argparse.Namespace) -> tuple[Path | None, Path, Path | None,
             )
         check_content(f"image is usable    {image.name if image else ''}", image, checks.check_image)
     elif want_video:
-        video = Path(args.video)
+        from .youtube import download_youtube_video, is_url
+
+        if is_url(args.video):
+            dl_dir = (
+                Path(args.output_dir).resolve()
+                if getattr(args, "output_dir", None)
+                else paths.VIDEO_DIR
+            )
+            video = download_youtube_video(args.video, dl_dir)
+        else:
+            video = Path(args.video)
         if video.exists() and paths.is_image(video):
             image = video
             video = None

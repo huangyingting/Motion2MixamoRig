@@ -20,6 +20,7 @@ dependencies = [
 
 [project.scripts]
 m2mr = "motion2mixamorig.cli:main"
+yt2bvh = "motion2mixamorig.youtube:main"
 
 [build-system]
 requires = ["setuptools>=68"]

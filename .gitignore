@@ -35,3 +35,4 @@ scripts/verify_blender_addon.py
 
 # ── OS junk ──────────────────────────────────────────────────
 .DS_Store
+yt2bvh.sh

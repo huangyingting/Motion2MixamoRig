@@ -35,6 +35,7 @@ from .extractors.hamer import (
 from .mixamo.hand_retarget import build_hand_mapping, load_hand_motion
 from .human_motion import HumanMotion, foot_contact_from_cache, load_human_motion
 from .mixamo.animation import build_animation
+from .mixamo.bvh import write_bvh
 from .mixamo.gltf import write_glb
 from .mixamo.kinematics import quat_wxyz
 from .mixamo.retarget import verify_rest_fk
@@ -221,10 +222,15 @@ def run_pipeline(
         write_glb(glb_path, asset, anim.r_anim_rig, anim.hips_cm_rig, anim.fps)
         print(f"saved {glb_path}")
 
+        bvh_path = run_dir / "mixamo_motion.bvh"
+        write_bvh(bvh_path, asset, anim.r_anim_rig, anim.hips_cm_rig, anim.fps)
+        print(f"saved {bvh_path}")
+
         outputs = {
             "skeleton_motion": motion_npz.name,
             "mixamo_rotations": rotations_npz.name,
             "mixamo_character_glb": glb_path.name,
+            "mixamo_motion_bvh": bvh_path.name,
         }
 
         # Diagnostics are a report, not a product: a failure here must not fail the run.
