@@ -13,7 +13,7 @@ from pathlib import Path
 import numpy as np
 
 from .fbx_skeleton import bone_suffix
-from .kinematics import MixamoRig, forward_kinematics
+from .kinematics import forward_kinematics
 from .skinned_mesh import YBotAsset, load_character_asset
 
 
@@ -40,12 +40,6 @@ def _rotmat_to_euler_zxy_deg(r: np.ndarray) -> tuple[float, float, float]:
     return z * rad2deg, x * rad2deg, y * rad2deg
 
 
-def _compute_world_bind_positions(rig: MixamoRig) -> dict[str, np.ndarray]:
-    """Compute world-space bind positions (in rig units, cm) for every bone."""
-    fk_rest = forward_kinematics(rig)
-    return {name: np.asarray(mat[:3, 3], dtype=np.float64) for name, mat in fk_rest.items()}
-
-
 def write_bvh(
     out_path: Path,
     asset: YBotAsset,
@@ -62,14 +56,14 @@ def write_bvh(
     - Bone names strip any `mixamorig:` prefix (colons break Three.js PropertyBinding).
     - `ROOT Hips` uses `OFFSET 0 0 0` so `BVHLoader` does not double-add root offset.
     - All joint axes at rest are aligned with the global coordinate axes (identity rest
-      orientation). At frame `t`, if a bone's world rotation is `W_t[i]` and its parent's
-      world rotation is `W_t[p]`, the BVH joint rotation matrix is:
-          `R_bvh[i] = W_t[p]^T @ W_t[i]` (and `W_t[root]` for the root joint).
+      orientation). Remove each bone's world bind rotation first:
+          `D_t[i] = W_t[i] @ W_bind[i]^T`
+      Then the BVH joint rotation is `D_t[p]^T @ D_t[i]` (root: `D_t[root]`).
     """
     rig = asset.rig
     root_name = rig.root
-    rest_pos_cm = _compute_world_bind_positions(rig)
-    rest_pos_m = {name: pos * scale for name, pos in rest_pos_cm.items()}
+    fk_rest = forward_kinematics(rig)
+    rest_pos_m = {name: mat[:3, 3] * scale for name, mat in fk_rest.items()}
 
     joint_order: list[str] = []
     lines: list[str] = ["HIERARCHY"]
@@ -125,6 +119,9 @@ def write_bvh(
 
     for f_idx in range(n_frames):
         fk = forward_kinematics(rig, r_anim_rig[f_idx], hips_cm_rig[f_idx])
+        world_deltas = {
+            name: mat[:3, :3] @ fk_rest[name][:3, :3].T for name, mat in fk.items()
+        }
         root_pos = fk[root_name][:3, 3] * scale
         vals: list[str] = [
             f"{root_pos[0]:.6f}",
@@ -133,11 +130,11 @@ def write_bvh(
         ]
         for name in joint_order:
             bone = rig.bones[name]
-            w_curr = fk[name][:3, :3]
+            w_curr = world_deltas[name]
             if bone.parent is None:
                 r_bvh = w_curr
             else:
-                w_parent = fk[bone.parent][:3, :3]
+                w_parent = world_deltas[bone.parent]
                 r_bvh = w_parent.T @ w_curr
             z_deg, x_deg, y_deg = _rotmat_to_euler_zxy_deg(r_bvh)
             vals.append(f"{z_deg:.6f}")
@@ -159,7 +156,7 @@ def write_bvh_from_npz(
     scale: float = 0.01,
 ) -> Path:
     """Export a `.bvh` file directly from a saved `mixamo_rotations.npz` artifact."""
-    from .kinematics import rotmat_from_quat_wxyz
+    from scipy.spatial.transform import Rotation
 
     data = np.load(rotations_npz, allow_pickle=True)
     bone_names = [str(b) for b in data["bone_names"]]
@@ -174,7 +171,9 @@ def write_bvh_from_npz(
     for i in range(n_frames):
         frame_rots: dict[str, np.ndarray] = {}
         for b_idx, b_name in enumerate(bone_names):
-            frame_rots[b_name] = rotmat_from_quat_wxyz(q_rig[i, b_idx])
+            frame_rots[b_name] = Rotation.from_quat(
+                q_rig[i, b_idx][[1, 2, 3, 0]]
+            ).as_matrix()
         r_anim_rig.append(frame_rots)
 
     return write_bvh(out_bvh, asset, r_anim_rig, hips_cm_rig, fps, scale=scale)

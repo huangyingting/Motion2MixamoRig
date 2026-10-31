@@ -10,6 +10,8 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
+from .result_reader import find_result_file
+
 DIAGNOSTICS_JSON = "diagnostics.json"
 
 _cache: dict[str, tuple[float, dict | None]] = {}
@@ -22,7 +24,7 @@ def load_diagnostics(run_dir: str | Path) -> dict | None:
     """
     if not run_dir:
         return None
-    path = Path(run_dir).expanduser() / DIAGNOSTICS_JSON
+    path = find_result_file(Path(run_dir).expanduser(), DIAGNOSTICS_JSON)
     try:
         mtime = path.stat().st_mtime
     except OSError:

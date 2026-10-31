@@ -1,4 +1,4 @@
-"""Import a generated mixamo_character.glb and set the scene timeline."""
+"""Import a generated character GLB and set the scene timeline."""
 
 from __future__ import annotations
 
@@ -362,7 +362,7 @@ def import_generated_character(
 class M2MR_OT_import_result(Operator):
     bl_idname = "m2mr.import_result"
     bl_label = "Import Generated Character"
-    bl_description = "Import mixamo_character.glb from the last Motion2MixamoRig job"
+    bl_description = "Import the character GLB from the last Motion2MixamoRig job"
 
     def execute(self, context: Context):
         props = context.scene.m2mr

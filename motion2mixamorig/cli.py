@@ -1,7 +1,7 @@
 """The `m2mr` command-line entry point: doctor / run.
 
     m2mr doctor                 check assets, weights and dependencies
-    m2mr run                    latest video in assets/video/ + default Y Bot
+    m2mr run                    latest video in assets/video/ + default X Bot
     m2mr run --video V --rig R  pick the inputs explicitly (flags combine freely)
     m2mr run --image I --rig R  still photo -> 3D pose on the same Mixamo path
     m2mr run --set-extractor NAME   choose how the skeleton is recovered (default: gvhmr)
@@ -28,7 +28,7 @@ BAD = "[invalid]"
 
 RIG_HINT = (
     "download a character from https://www.mixamo.com/ (FBX Binary, T-pose) "
-    "into assets/mixamo/ , e.g. Y_Bot.fbx"
+    "into assets/mixamo/ , e.g. X_Bot.fbx"
 )
 VIDEO_HINT = (
     "put a *single-person* motion video (.mp4/.mov/...) into assets/video/ "
@@ -265,7 +265,7 @@ def preflight(args: argparse.Namespace) -> tuple[Path | None, Path, Path | None,
             )
             check_content(f"video is usable    {video.name}", video, checks.check_video)
 
-    # Rig: --rig wins, else Y_Bot.fbx, else the first .fbx in assets/mixamo/.
+    # Rig: --rig wins, else X_Bot.fbx, else the first .fbx in assets/mixamo/.
     if args.rig:
         rig = Path(args.rig)
         check(f"Mixamo rig .fbx    {rig}", rig.exists(), "check the --rig path")
@@ -396,8 +396,7 @@ def run(args: argparse.Namespace) -> int:
 
         traceback.print_exc()
         return 1
-    preview = "images" if image is not None else "videos"
-    print(f"\nresults: {run_dir / preview}")
+    print(f"\nresults: {run_dir}")
     return 0
 
 
@@ -432,11 +431,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_run.add_argument(
         "--rig",
-        help="Mixamo character .fbx (default: assets/mixamo/Y_Bot.fbx)",
+        help="Mixamo character .fbx (default: assets/mixamo/X_Bot.fbx)",
     )
     p_run.add_argument(
         "--skeleton",
-        help="reuse a previous run's skeleton_motion.npz and skip extraction",
+        help="reuse a previous run's *_skeleton.npz (or legacy skeleton_motion.npz) and skip extraction",
     )
     _add_extractor_arg(p_run)
     _add_detect_hands_arg(p_run)
@@ -467,7 +466,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_run.add_argument(
         "--no-preview",
         action="store_true",
-        help="skip preview videos/images; still write NPZ, GLB, and run.json",
+        help="skip previews; still write NPZ, GLB, BVH, and the run report",
     )
     p_run.add_argument(
         "--no-foot-lock",
@@ -477,13 +476,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_diag = sub.add_parser(
         "diagnose",
-        help="check a run's mixamo_character.glb for self-intersection -> diagnostics.json",
+        help="check a run's character GLB for self-intersection -> *_diagnostics.json",
     )
-    p_diag.add_argument("run_dir", help="a run folder from `m2mr run` (contains mixamo_character.glb)")
+    p_diag.add_argument("run_dir", help="a run folder from `m2mr run` (contains the character GLB)")
     p_diag.add_argument(
         "--visualize",
         action="store_true",
-        help="also write diagnostics.html: 3D view, timeline, and clickable issue list",
+        help="also write *_diagnostics.html: 3D view, timeline, and clickable issue list",
     )
     p_diag.add_argument(
         "--threshold-cm",
@@ -505,9 +504,9 @@ def diagnose(args: argparse.Namespace) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     print(summary_line(report))
-    print(f"report: {run_dir / DIAGNOSTICS_JSON}")
+    print(f"report: {paths.find_run_file(run_dir, DIAGNOSTICS_JSON)}")
     if args.visualize:
-        print(f"view:   {run_dir / DIAGNOSTICS_HTML}")
+        print(f"view:   {paths.find_run_file(run_dir, DIAGNOSTICS_HTML)}")
     return 0
 
 

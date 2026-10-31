@@ -15,7 +15,7 @@ MANO_DIR = BODY_MODELS / "mano"
 MANO_RIGHT_PKL = MANO_DIR / "MANO_RIGHT.pkl"
 MANO_RIGHT_NPZ = MANO_DIR / "MANO_RIGHT.npz"
 MIXAMO_DIR = ASSETS / "mixamo"
-DEFAULT_RIG = MIXAMO_DIR / "Y_Bot.fbx"
+DEFAULT_RIG = MIXAMO_DIR / "X_Bot.fbx"
 VIDEO_DIR = ASSETS / "video"
 IMAGE_DIR = ASSETS / "image"
 
@@ -27,6 +27,32 @@ OUTPUTS = PROJECT_ROOT / "outputs"
 
 VIDEO_SUFFIXES = (".mp4", ".mov", ".avi", ".mkv", ".webm")
 IMAGE_SUFFIXES = (".jpg", ".jpeg", ".png", ".webp", ".bmp")
+
+_OUTPUT_SUFFIXES = {
+    "run.json": "run.json",
+    "skeleton_motion.npz": "skeleton.npz",
+    "mixamo_rotations.npz": "rotations.npz",
+    "mixamo_character.glb": "character.glb",
+    "diagnostics.json": "diagnostics.json",
+    "diagnostics.html": "diagnostics.html",
+    "compare.mp4": "compare.mp4",
+}
+
+
+def run_output_path(run_dir: Path, source: Path, legacy_name: str) -> Path:
+    """Name an output after its input file, retaining the artifact's role."""
+    suffix = _OUTPUT_SUFFIXES[legacy_name]
+    return Path(run_dir) / f"{Path(source).stem}_{suffix}"
+
+
+def find_run_file(run_dir: Path, legacy_name: str) -> Path:
+    """Find a prefixed artifact, falling back to the fixed-name legacy layout."""
+    directory = Path(run_dir)
+    suffix = _OUTPUT_SUFFIXES[legacy_name]
+    matches = sorted(p for p in directory.glob(f"*_{suffix}") if p.name != legacy_name)
+    if len(matches) > 1:
+        raise ValueError(f"Multiple {suffix} files in {directory}; pass one run folder")
+    return matches[0] if matches else directory / legacy_name
 
 
 def _list_media(folder: Path, suffixes: tuple[str, ...]) -> list[Path]:

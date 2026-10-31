@@ -83,7 +83,7 @@ def classify_log_text(text: str) -> tuple[str, str]:
         return "INVALID_RIG", message_for_code("INVALID_RIG")
     if "result json is invalid" in low or "jsondecodeerror" in low:
         return "JSON_INVALID", message_for_code("JSON_INVALID")
-    if "mixamo_character.glb" in low and ("not found" in low or "missing" in low):
+    if "_character.glb" in low and ("not found" in low or "missing" in low):
         return "GLB_MISSING", message_for_code("GLB_MISSING")
     if "input check failed" in low or "problem(s) — nothing was run" in low:
         return "PREFLIGHT_FAILED", message_for_code("PREFLIGHT_FAILED")

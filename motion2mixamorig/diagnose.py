@@ -422,16 +422,28 @@ def summary_line(report: dict) -> str:
 
 
 def diagnose_run(run_dir: Path, *, threshold_cm: float = DEFAULT_THRESHOLD_CM,
-                 visualize: bool = False, verbose: bool = True) -> dict:
-    """Diagnose <run_dir>/mixamo_character.glb; write diagnostics.json (and .html)."""
+                 visualize: bool = False, verbose: bool = True,
+                 source: Path | None = None) -> dict:
+    """Diagnose a run's character GLB, supporting prefixed and legacy layouts."""
+    from .paths import find_run_file, run_output_path
+
     run_dir = Path(run_dir)
-    glb = run_dir / "mixamo_character.glb"
+    glb = (
+        run_output_path(run_dir, source, "mixamo_character.glb")
+        if source is not None else find_run_file(run_dir, "mixamo_character.glb")
+    )
     if not glb.is_file():
         raise FileNotFoundError(f"{glb} not found — pass a run folder from `m2mr run`")
     report = diagnose_glb(glb, threshold_cm=threshold_cm, verbose=verbose)
-    (run_dir / DIAGNOSTICS_JSON).write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+    if source is None and glb.name != "mixamo_character.glb":
+        source = Path(glb.name.removesuffix("_character.glb") + ".glb")
+    json_path = (
+        run_output_path(run_dir, source, DIAGNOSTICS_JSON)
+        if source is not None else run_dir / DIAGNOSTICS_JSON
+    )
+    json_path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     if visualize:
         from .diagnose_report import write_html_report
 
-        write_html_report(run_dir / DIAGNOSTICS_HTML, glb, report, SkinnedClip(glb))
+        write_html_report(json_path.with_suffix(".html"), glb, report, SkinnedClip(glb))
     return report

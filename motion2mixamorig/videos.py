@@ -1,7 +1,8 @@
-"""Render the four result views of a run, all in the input's aspect ratio.
+"""Render comparison previews, all in the input's aspect ratio.
 
-Video input writes `videos/*.mp4`; a still writes the same four views as
-`images/*.png`:
+Video input writes one source-prefixed four-panel comparison MP4. A still
+writes source-prefixed PNG views and an orbit comparison MP4. All previews
+live directly in the run directory:
 
     human_skeleton    3D human skeleton recovered from the source
     mixamo_skeleton   retargeted Mixamo Skeleton
@@ -17,7 +18,7 @@ the figure just hangs in black. All of it is fitted once over the whole clip;
 nothing is re-centred per frame.
 
 Video frames are streamed straight into ffmpeg (which also muxes the source
-video's audio into every output), so memory stays flat no matter how long the
+video's audio into the comparison), so memory stays flat no matter how long the
 clip is. When ffmpeg is missing the videos still get written via OpenCV, just
 silent.
 """
@@ -333,7 +334,7 @@ def render_run_images(
     original_label: str = "Original Photo",
     verbose: bool = True,
 ) -> dict[str, Path]:
-    """Write the four stills into `out_dir` (images/ of a still run).
+    """Write source-prefixed stills directly into the run directory.
 
     Uses the middle hold frame: GVHMR is temporal, so the centre of the
     repeated still is the most settled pose.
@@ -359,10 +360,12 @@ def render_run_images(
         faces=faces, colors=colors,
     )
     out = {
-        "human_skeleton": _write_png(out_dir / "human_skeleton.png", p_hum),
-        "mixamo_skeleton": _write_png(out_dir / "mixamo_skeleton.png", p_mix),
-        "mixamo_character": _write_png(out_dir / "mixamo_character.png", p_char),
-        "compare": _write_png(out_dir / "compare.png", _grid2x2(p_orig, p_mix, p_hum, p_char)),
+        "human_skeleton": _write_png(out_dir / f"{source_image.stem}_human_skeleton.png", p_hum),
+        "mixamo_skeleton": _write_png(out_dir / f"{source_image.stem}_mixamo_skeleton.png", p_mix),
+        "mixamo_character": _write_png(out_dir / f"{source_image.stem}_mixamo_character.png", p_char),
+        "compare": _write_png(
+            out_dir / f"{source_image.stem}_compare.png", _grid2x2(p_orig, p_mix, p_hum, p_char)
+        ),
     }
     if verbose:
         print("rendering 360 compare")
@@ -477,7 +480,7 @@ def render_orbit_compare(
     label_panel(left, "Original Photo")
     character = calibration.fbx_path.stem
     n = max(2, int(round(ORBIT_SECONDS * ORBIT_FPS)))
-    out_path = out_dir / "before_after_360_compare.mp4"
+    out_path = out_dir / f"{source_image.stem}_before_after_360_compare.mp4"
     writer = _StreamWriter(out_path, ORBIT_FPS, 2 * width, height)
     if verbose:
         print(f"  orbit dist {dist:.3f} m  {n} frames @ {ORBIT_FPS:g} fps"
@@ -508,7 +511,7 @@ def render_run_videos(
     original_label: str = "Original Video",
     verbose: bool = True,
 ) -> dict[str, Path]:
-    """Write the four result videos into `out_dir` (videos/ of a run)."""
+    """Write one source-prefixed four-panel comparison into the run directory."""
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     width, height = panel_size(source_video)
@@ -523,25 +526,18 @@ def render_run_videos(
     audio_start = anim.frames[0] / fps
     audio_dur = anim.n / fps
 
-    def writer(name: str, w: int, h: int) -> _StreamWriter:
-        return _StreamWriter(
-            out_dir / name, fps, w, h,
-            audio_src=source_video,
-            audio_start_s=audio_start,
-            audio_dur_s=audio_dur,
-        )
-
-    writers = {
-        "human_skeleton": writer("human_skeleton.mp4", width, height),
-        "mixamo_skeleton": writer("mixamo_skeleton.mp4", width, height),
-        "mixamo_character": writer("mixamo_character.mp4", width, height),
-        "compare": writer("compare.mp4", 2 * width, 2 * height),
-    }
     # Motion frames are at the model rate (GVHMR resamples to 30 fps) while the source
     # may be 60 fps or more: pick the original frame at the same timestamp, not index.
     source_fps = video_native_fps(source_video) or fps
     originals = _OriginalReader(source_video, width, height)
+    writer = None
     try:
+        writer = _StreamWriter(
+            out_dir / f"{source_video.stem}_compare.mp4", fps, 2 * width, 2 * height,
+            audio_src=source_video,
+            audio_start_s=audio_start,
+            audio_dur_s=audio_dur,
+        )
         for i in range(anim.n):
             t = anim.frames[i] / fps
             p_orig, p_mix, p_hum, p_char = _draw_panels(
@@ -553,17 +549,16 @@ def render_run_videos(
                 backdrop_dark=backdrop_dark, backdrop_grid=backdrop_grid,
                 faces=faces, colors=colors,
             )
-            writers["human_skeleton"].write(p_hum)
-            writers["mixamo_skeleton"].write(p_mix)
-            writers["mixamo_character"].write(p_char)
-            writers["compare"].write(_grid2x2(p_orig, p_mix, p_hum, p_char))
+            writer.write(_grid2x2(p_orig, p_mix, p_hum, p_char))
 
             if verbose and (i == 0 or (i + 1) % 100 == 0 or i == anim.n - 1):
                 print(f"  render {i + 1}/{anim.n}")
     finally:
         originals.close()
+        if writer is not None:
+            writer.close()
 
-    out = {name: w.close() for name, w in writers.items()}
+    out = {"compare": writer.out_path}
     if verbose:
         for path in out.values():
             print(f"saved {path}")

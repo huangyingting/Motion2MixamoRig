@@ -20,6 +20,7 @@ import tempfile
 from pathlib import Path
 
 from .diagnose import PARTS, SkinnedClip
+from .paths import find_run_file
 
 _THREE = "https://cdn.jsdelivr.net/npm/three@0.160.0"
 # The embedded copy of the source: small enough to keep the HTML a few MB.
@@ -61,9 +62,9 @@ def _source_image(image: Path) -> tuple[dict, str] | None:
 def source_media(run_dir: Path) -> tuple[dict, str]:
     """The run's input video or photo (from run.json), ready to embed; or a note why not."""
     try:
-        run = json.loads((Path(run_dir) / "run.json").read_text(encoding="utf-8"))
+        run = json.loads(find_run_file(run_dir, "run.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        return {"kind": "none", "note": "run.json not found, so the source video is unknown."}, ""
+        return {"kind": "none", "note": "Run report not found, so the source video is unknown."}, ""
     for key, load in (("image", _source_image), ("video", _source_video)):
         src = run.get(key)
         if not src:
@@ -77,7 +78,7 @@ def source_media(run_dir: Path) -> tuple[dict, str]:
         meta, b64 = got
         meta["name"] = Path(src).name
         return meta, b64
-    return {"kind": "none", "note": "run.json lists no source video or photo."}, ""
+    return {"kind": "none", "note": "Run report lists no source video or photo."}, ""
 
 
 def _review_source(run_dir: Path) -> dict:
@@ -92,7 +93,7 @@ def _review_source(run_dir: Path) -> dict:
         "rig_name": None,
     }
     try:
-        run = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+        run = json.loads(find_run_file(run_dir, "run.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return info
     for key in ("video", "image", "rig"):
@@ -110,6 +111,12 @@ def write_html_report(path: Path, glb_path: Path, report: dict, clip: SkinnedCli
     payload = {
         "report": report,
         "source": _review_source(run_dir),
+        "files": [
+            Path(glb_path).name,
+            *(find_run_file(run_dir, name).name for name in (
+                "mixamo_rotations.npz", "skeleton_motion.npz", "diagnostics.json"
+            )),
+        ],
         "parts": list(PARTS),
         "media": media,
         # Body part per vertex, per skinned mesh node, in GLB vertex order.
@@ -441,7 +448,7 @@ document.querySelectorAll('#filters button').forEach(b => b.onclick = () => {
 // Timeline: a sticky review lane (notes a person makes) above one track per issue.
 const TL = { label: 180, ruler: 22, lane: 32, row: 20, pad: 12 };
 const AMBER = '#e6a23c';
-// The GLB is named mixamo_character.glb in every run, so the browser must not
+// Different reports can embed different GLBs, so the browser must not
 // key notes by that name: a new report would open with the previous clip's notes.
 // The run folder and the source video (or still) are written into this file.
 const ident = D.source || {};
@@ -534,7 +541,7 @@ function exportReview() {
     frame_count: N,
     threshold_cm: R.threshold_cm,
     generated: R.generated,
-    files: ['mixamo_character.glb', 'mixamo_rotations.npz', 'skeleton_motion.npz', 'diagnostics.json'],
+    files: D.files,
     manual_annotations: manual,
     self_intersection_summary: R.summary.self_intersection,
     self_intersections: R.issues,

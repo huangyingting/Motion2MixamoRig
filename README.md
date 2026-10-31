@@ -81,18 +81,25 @@ This repository does not ship these files; you have to fetch them. The SMPL-X fi
 | What | Where | Where to get it |
 |---|---|---|
 | SMPL-X body model | `assets/body_models/smplx/SMPLX_NEUTRAL.npz` | Register at [SMPL-X](https://smpl-x.is.tue.mpg.de/) and download it |
-| Mixamo character FBX | `assets/mixamo/Y_Bot.fbx` | With an Adobe account, download Y Bot (or any other Mixamo-rigged character) from [Mixamo](https://www.mixamo.com) |
+| Mixamo character FBX | `assets/mixamo/X_Bot.fbx` | With an Adobe account, download X Bot (or any other Mixamo-rigged character) from [Mixamo](https://www.mixamo.com) |
 | Action video | `assets/video/<your_clip>.mp4` | A clip with **exactly one** clearly visible person, **head to toe in frame the whole time** (you may keep several files; each run uses the most recently added) |
 | Pose still (optional) | `assets/image/<your_photo>.jpg` | A photo with **exactly one** clearly visible person, **head to toe in frame**. Use with `--image` |
 | MANO right hand (only for `--detect-hands`) | `assets/body_models/mano/MANO_RIGHT.pkl` | Register at [MANO](https://mano.is.tue.mpg.de/) and download **Models & Code**. A body-only run does not need this file |
 
-Note: Mixamo's download is named `Y Bot.fbx` (**space**), one character off from `Y_Bot.fbx` (**underscore**) in the table.
-Rename it to the underscore form and it becomes the default rig (`m2mr run` without `--rig`). Leaving the space is fine too — if `Y_Bot.fbx` is missing, the first `.fbx` in `assets/mixamo/` is used.
+Note: Mixamo's download is named `X Bot.fbx` (**space**), one character off from `X_Bot.fbx` (**underscore**) in the table.
+Rename it to the underscore form and it becomes the default rig (`m2mr run` without `--rig`). Leaving the space is fine too — if `X_Bot.fbx` is missing, `m2mr run` uses the first `.fbx` in `assets/mixamo/`.
 
 `assets/video/` can hold several videos. Without `--video` or `--image`, the run uses the file **most recently added** to `assets/video/`; if that folder is empty it falls back to the latest still in `assets/image/`.
 Each clip or photo must show only one person, **head to toe in frame** — nothing cropped at the edges. `m2mr doctor` / `m2mr run` stop before extraction if two people are in view.
 
 ## Quick Start
+
+YouTube downloads use local Tor (`socks5h://127.0.0.1:9050`) by default.
+They fail rather than silently switching to a direct connection when Tor is
+unavailable or the download fails. `YT_DLP_PROXY` overrides the default;
+`yt2bvh --proxy URL` takes precedence over that environment variable.
+Use `yt2bvh --proxy ""` (or `YT_DLP_PROXY=""`) to explicitly download directly.
+
 
 Results land in `outputs/<run-time>_<source>/`. Video runs write `videos/`; still runs write `images/`.
 
@@ -112,7 +119,7 @@ m2mr doctor --detect-hands
 
 ### 2. First run: get something on screen
 
-With no flags, this uses the **latest file in `assets/video/`** and `assets/mixamo/Y_Bot.fbx`.
+With no flags, this uses the **latest file in `assets/video/`** and `assets/mixamo/X_Bot.fbx`.
 
 ```bash
 m2mr run
@@ -130,7 +137,7 @@ Download another character from Mixamo into `assets/mixamo/`. **Do not rerun wit
 Pass `--skeleton` to reuse the skeleton from a previous run; minutes become tens of seconds:
 
 ```bash
-m2mr run --skeleton outputs/<previous-run-dir>/skeleton_motion.npz --rig assets/mixamo/Vampire.fbx
+m2mr run --skeleton outputs/<previous-run-dir>/<source>_skeleton.npz --rig assets/mixamo/Vampire.fbx
 ```
 
 ### 4. A different video
@@ -143,7 +150,7 @@ m2mr run --video assets/video/dance.mp4 --rig assets/mixamo/Vampire.fbx
 
 ### 5. A still photo (static pose)
 
-`--image` recovers a **static 3D pose** from a photo of one person, then retargets it onto the Mixamo character the same way a video run does. Previews are four stills in `images/` (same views as the video run), plus a left/right orbit clip `before_after_360_compare.mp4`. Do not pass `--video` at the same time.
+`--image` recovers a **static 3D pose** from a photo of one person, then retargets it onto the Mixamo character the same way a video run does. Previews are four source-prefixed stills, plus `<source>_before_after_360_compare.mp4`, directly in the run directory. Do not pass `--video` at the same time.
 
 ```bash
 m2mr run --image assets/image/pose.jpg
@@ -154,13 +161,13 @@ m2mr run --image assets/image/pose.jpg --rig assets/mixamo/Vampire.fbx
 
 ### 6. Check for self-intersection
 
-Every run also checks the finished character for **self-intersection** — one body part going into another, like a hand inside the head — and writes `diagnostics.json`. The terminal prints one line, e.g. `diagnostics: 14 self-intersection(s) over 116 of 719 frames, deepest 7.87 cm`. The floor is not checked.
+Every run also checks the finished character for **self-intersection** — one body part going into another, like a hand inside the head — and writes `<source>_diagnostics.json`. The terminal prints one line, e.g. `diagnostics: 14 self-intersection(s) over 116 of 719 frames, deepest 7.87 cm`. The floor is not checked.
 
 To re-check a run, or to see the problems:
 
 ```bash
-m2mr diagnose outputs/<run>                  # rewrite diagnostics.json
-m2mr diagnose outputs/<run> --visualize      # also diagnostics.html: source video beside the character, timeline, clickable issue list
+m2mr diagnose outputs/<run>                  # rewrite <source>_diagnostics.json
+m2mr diagnose outputs/<run> --visualize      # also <source>_diagnostics.html: source video beside the character, timeline, clickable issue list
 m2mr diagnose outputs/<run> --threshold-cm 2 # report only penetrations deeper than 2 cm (default 1)
 ```
 
@@ -192,46 +199,53 @@ Reusing a previous skeleton:
 
 ## Outputs
 
-Each `m2mr run` creates a directory named by **the time the command started**. The files at the root are the same for video and still; only the preview folder changes.
+Each `m2mr run` creates a directory named by **the time the command started**.
+All outputs are flat in that directory and use the input file's stem as their
+prefix. Extractor intermediates alone remain under `cache/`.
 
 ```
 outputs/20260829_193205_dance/          # or …_pose/ for a still
-├── run.json                            # start time, inputs, full command
-├── skeleton_motion.npz                 # 3D human skeleton (reuse with --skeleton)
-├── mixamo_rotations.npz                # per-bone Mixamo rotations
-├── mixamo_character.glb                # skinned character, import into Blender / Unity
-├── diagnostics.json                    # self-intersection report (see Quick Start step 6)
-├── diagnostics.html                    # only after `m2mr diagnose <run> --visualize`
-└── videos/   or   images/              # previews — which one depends on the input
+├── dance_run.json                       # start time, inputs, full command
+├── dance_skeleton.npz                  # 3D human skeleton (reuse with --skeleton)
+├── dance_rotations.npz                 # per-bone Mixamo rotations
+├── dance.bvh                           # skeleton animation, named after the input file
+├── dance_character.glb                 # skinned character, import into Blender / Unity
+├── dance_diagnostics.json              # self-intersection report (see Quick Start step 6)
+├── dance_diagnostics.html              # only after `m2mr diagnose <run> --visualize`
+├── dance_compare.mp4                   # only video preview; omit with --no-preview
+└── cache/                              # reusable extractor intermediates
 ```
 
-**Video input** writes `videos/` (same aspect ratio as the clip):
+Both `m2mr` and `yt2bvh` write one `<source stem>.bvh`: `dance.mp4` becomes
+`dance.bvh`, and `pose.jpg` becomes `pose.bvh`. No duplicate with a fixed
+filename is created. Only the BVH is needed to use the
+skeleton animation; keep `<source>_rotations.npz` and the source FBX rig to
+re-export it later.
+
+**Video input** writes only `<source>_compare.mp4`: a 2x2 comparison of
+original (top left), Mixamo skeleton (top right), human skeleton (bottom left),
+and character (bottom right). It includes the source audio when ffmpeg is
+available. The individual panels are not written as duplicate MP4 files.
+
+**Still input** keeps its four PNG views and turntable, also in the run root:
 
 ```
-videos/
-├── human_skeleton.mp4                  # recovered 3D human skeleton
-├── mixamo_skeleton.mp4                 # Mixamo rig skeleton
-├── mixamo_character.mp4                # skinned Mixamo character
-└── compare.mp4                         # 2×2: original (TL) / Mixamo skeleton (TR)
-                                        #      human skeleton (BL) / character (BR)
-```
-
-**Still input** writes `images/` instead (same four views, plus a turntable):
-
-```
-images/
-├── human_skeleton.png                  # recovered 3D human skeleton
-├── mixamo_skeleton.png                 # Mixamo rig skeleton
-├── mixamo_character.png                # skinned Mixamo character
-├── compare.png                         # 2×2: original (TL) / Mixamo skeleton (TR)
+├── pose_human_skeleton.png             # recovered 3D human skeleton
+├── pose_mixamo_skeleton.png            # Mixamo rig skeleton
+├── pose_mixamo_character.png           # skinned Mixamo character
+├── pose_compare.png                    # 2×2: original (TL) / Mixamo skeleton (TR)
 │                                       #      human skeleton (BL) / character (BR)
-└── before_after_360_compare.mp4        # left: original photo
+└── pose_before_after_360_compare.mp4   # left: original photo
                                         # right: 10° orbit of the rig (one full turn)
 ```
 
-With `--detect-hands`, `skeleton_motion.npz` also stores the finger rotations, and `mixamo_rotations.npz` / `mixamo_character.glb` include the 30 finger bones. Without that flag, and without hand motion already stored in a reused skeleton, those bones stay at rest.
+Legacy runs with fixed filenames and `videos/` or `images/` folders remain
+readable. The run report's `outputs` mapping records the actual filenames;
+Blender imports, diagnostics and review-note downloads use those results.
 
-Open `mixamo_character.glb` in Blender: File → Import → glTF 2.0 (.glb/.gltf). If the camera is framed on empty space, select the character mesh and use View → Frame Selected. The cluster of spheres on the head and hands is bone display, not the mesh: in the Outliner, hide **Icosphere** and the **armature**; leave the skinned mesh visible. Set scene FPS from `run.json` (`fps`) and the timeline to frames 0 to `n_frames` − 1 so playback matches the source and frame numbers match `diagnostics.json`. Compare a video run against `videos/mixamo_character.mp4`, a still run against `images/mixamo_character.png` or the orbit clip.
+With `--detect-hands`, `<source>_skeleton.npz` also stores the finger rotations, and `<source>_rotations.npz` / `<source>_character.glb` include the 30 finger bones. Without that flag, and without hand motion already stored in a reused skeleton, those bones stay at rest.
+
+Open `<source>_character.glb` in Blender: File → Import → glTF 2.0 (.glb/.gltf). If the camera is framed on empty space, select the character mesh and use View → Frame Selected. The cluster of spheres on the head and hands is bone display, not the mesh: in the Outliner, hide **Icosphere** and the **armature**; leave the skinned mesh visible. Set scene FPS from `<source>_run.json` (`fps`) and the timeline to frames 0 to `n_frames` − 1 so playback matches the source and frame numbers match `<source>_diagnostics.json`. Compare a video run against `<source>_compare.mp4`, a still run against `<source>_mixamo_character.png` or the orbit clip.
 
 ## License
 

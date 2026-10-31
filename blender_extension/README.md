@@ -158,7 +158,7 @@ In **Input**:
 6. **Generate Motion**
 
 Blender stays interactive. On success the add-on imports
-`mixamo_character.glb` into a collection `M2MR_<source-name>`, hides the
+`<source>_character.glb` into a collection `M2MR_<source-name>`, hides the
 joint-bubble objects, frames the visible mesh, and sets timeline FPS / start /
 end from the clip. Import also adds a **Floor Markers** mesh on Blender's
 floor (z = 0); the checkbox under Progress / Result shows or hides it.
@@ -172,7 +172,9 @@ Jobs write to:
 <project>/outputs/blender_jobs/<job-id>/
 ```
 
-(`run.json`, `job.log`, `progress.jsonl`, NPZ files, and the GLB.) With the
+(`<source>_run.json`, `job.log`, `progress.jsonl`, source-prefixed NPZ files,
+BVH, and the GLB.) Outputs are flat; preview-enabled video jobs write only
+`<source>_compare.mp4`. Legacy fixed-name jobs remain readable. With the
 one-click runtime, `<project>` is `~/Motion2MixamoRig/app`.
 
 ## After import
@@ -182,7 +184,7 @@ one-click runtime, `<project>` is `~/Motion2MixamoRig/app`.
   Outliner, hide **Icosphere** and the **armature** (the row with pose /
   armature / mesh icons). Leave the **skinned_mesh_…** objects visible (one
   per FBX geometry, e.g. `skinned_mesh_0_Alpha_Surface`); they still deform.
-- Playback speed follows the source clip’s duration (`fps` in `run.json`).
+- Playback speed follows the source clip’s duration (`fps` in `<source>_run.json`).
 
 ## Devices
 
@@ -207,7 +209,7 @@ external process fails; open the full log.
 | Input contains multiple people | Use a single-person shot |
 | CUDA / MPS unavailable | Switch Device to CPU, or install a matching PyTorch |
 | Pipeline process exited unexpectedly | **View Full Log**; an empty log means the CLI did not start |
-| Result GLB not found | Re-run; check `run.json` in the job folder |
+| Result GLB not found | Re-run; check `<source>_run.json` in the job folder |
 | Generation succeeded, but automatic import failed | **Import Generated Character** |
 
 The panel shows one short line. Full stdout/stderr is in `job.log`.

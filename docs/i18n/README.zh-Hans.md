@@ -80,13 +80,13 @@ pip install --upgrade pip setuptools wheel \
 | 放什么 | 放到哪 | 去哪拿 |
 |---|---|---|
 | SMPL-X 人体模型 | `assets/body_models/smplx/SMPLX_NEUTRAL.npz` | 注册 [SMPL-X](https://smpl-x.is.tue.mpg.de/) 后下载 |
-| Mixamo 角色 FBX | `assets/mixamo/Y_Bot.fbx` | 用 Adobe 账号从 [Mixamo](https://www.mixamo.com) 下载 Y Bot（或其他 Mixamo rig 角色） |
+| Mixamo 角色 FBX | `assets/mixamo/X_Bot.fbx` | 用 Adobe 账号从 [Mixamo](https://www.mixamo.com) 下载 X Bot（或其他 Mixamo rig 角色） |
 | 动作视频 | `assets/video/<your_clip>.mp4` | **只有一个人**、人清晰可见、**从头到脚全程都在画框内**（可放多个文件，每次跑用最新的那一个） |
 | 姿态照片（可选） | `assets/image/<your_photo>.jpg` | **只有一个人**、人清晰可见、**从头到脚都在画框内**。配合 `--image` 使用 |
 | MANO 右手模型（只有 `--detect-hands` 才需要） | `assets/body_models/mano/MANO_RIGHT.pkl` | 在 [MANO](https://mano.is.tue.mpg.de/) 注册后下载 **Models & Code**。只跑身体时不需要这个文件 |
 
-注意：Mixamo 下载下来的文件叫 `Y Bot.fbx`（中间是**空格**），和上表的 `Y_Bot.fbx`（**下划线**）差一个字符。
-改成下划线它就是默认 rig，`m2mr run` 不带 `--rig` 时自动用它；不想改名也行——找不到 `Y_Bot.fbx` 时
+注意：Mixamo 下载下来的文件叫 `X Bot.fbx`（中间是**空格**），和上表的 `X_Bot.fbx`（**下划线**）差一个字符。
+改成下划线它就是默认 rig，`m2mr run` 不带 `--rig` 时自动用它；不想改名也行——找不到 `X_Bot.fbx` 时
 会自动用 `assets/mixamo/` 里的第一个 `.fbx`。
 
 `assets/video/` 可以放多个视频文件。不指定 `--video` 或 `--image` 时，会用**最后放进 `assets/video/` 的视频**；这个文件夹是空的，就退回到 `assets/image/` 里最新的一张照片。
@@ -94,7 +94,13 @@ pip install --upgrade pip setuptools wheel \
 
 ## Quick Start
 
-结果都在 `outputs/<运行时间>_<输入名>/`。视频输入写 `videos/`，照片输入写 `images/`。
+YouTube 下载默认使用本机 Tor（`socks5h://127.0.0.1:9050`）。
+Tor 不可用或下载失败时会报错，不会悄悄改为直连。
+`YT_DLP_PROXY` 可覆盖默认配置，`yt2bvh --proxy URL` 的优先级更高。
+明确需要直连时，使用 `yt2bvh --proxy ""` 或设置 `YT_DLP_PROXY=""`。
+
+
+结果都平铺在 `outputs/<运行时间>_<输入名>/`，以输入文件名为前缀。
 
 ### 1. 检查资产和环境
 
@@ -112,7 +118,7 @@ m2mr doctor --detect-hands
 
 ### 2. 第一次跑：先拿到一个能看的结果
 
-不带参数时，用**最后放进 `assets/video/` 的视频** + `assets/mixamo/Y_Bot.fbx`。
+不带参数时，用**最后放进 `assets/video/` 的视频** + `assets/mixamo/X_Bot.fbx`。
 
 ```bash
 m2mr run
@@ -143,7 +149,7 @@ m2mr run --video assets/video/dance.mp4 --rig assets/mixamo/Vampire.fbx
 
 ### 5. 用一张照片（静态姿态）
 
-`--image` 从**单人照片**恢复一个静态 3D 姿态，再按和视频相同的路径转到 Mixamo 角色上。预览是 `images/` 里的四张静帧（种类和视频 run 一样），外加左右对比绕转视频 `before_after_360_compare.mp4`。不要和 `--video` 一起用。
+`--image` 从**单人照片**恢复一个静态 3D 姿态，再按和视频相同的路径转到 Mixamo 角色上。预览是运行目录里的四张带前缀静帧，外加左右对比绕转视频 `<前缀>_before_after_360_compare.mp4`。不要和 `--video` 一起用。
 
 ```bash
 m2mr run --image assets/image/pose.jpg
@@ -192,46 +198,44 @@ m2mr run --video assets/video/dance.mp4 --detect-hands --hand-smooth 0.08
 
 ## 输出
 
-每次 `m2mr run` 按**命令启动时间**新建一个目录。根目录的文件视频和照片都一样，只有预览文件夹会变。
+每次 `m2mr run` 按**命令启动时间**新建一个目录。输出都平铺在该目录，
+以输入文件名（不含扩展名）为前缀；只有内部推理缓存保留在 `cache/`。
 
 ```
 outputs/20260829_193205_dance/          # 照片 run 则是 …_pose/
-├── run.json                            # 启动时间、输入、完整命令
-├── skeleton_motion.npz                 # 人体 3D 骨架（可用 --skeleton 复用）
-├── mixamo_rotations.npz                # Mixamo 骨骼逐帧旋转
-├── mixamo_character.glb                # 带皮角色，Blender / Unity 可导入
-├── diagnostics.json                    # 穿模报告（见 Quick Start 第 6 步）
-├── diagnostics.html                    # 只在运行 `m2mr diagnose <run> --visualize` 之后才有
-└── videos/   或   images/              # 预览 — 取决于这次输入是视频还是照片
+├── dance_run.json                      # 启动时间、输入、完整命令
+├── dance_skeleton.npz                  # 人体 3D 骨架（可用 --skeleton 复用）
+├── dance_rotations.npz                 # Mixamo 骨骼逐帧旋转
+├── dance.bvh                           # 骨架动画，只保留一份
+├── dance_character.glb                 # 带皮角色，Blender / Unity 可导入
+├── dance_diagnostics.json              # 穿模报告（见 Quick Start 第 6 步）
+├── dance_diagnostics.html              # 只在运行 `m2mr diagnose <run> --visualize` 之后才有
+├── dance_compare.mp4                   # 唯一的视频预览，可用 --no-preview 跳过
+└── cache/                              # 内部推理缓存
 ```
 
-**视频输入**写 `videos/`（比例跟片段一致）：
+**视频输入**只写 `<前缀>_compare.mp4`，包含原片、Mixamo 骨架、
+人体骨架、带皮角色的四宫格对比；有 ffmpeg 时保留原片声音。
+不再另存三种单独的视图 MP4，也不创建 `videos/` 目录。
+
+**照片输入**保留四种 PNG 和绕转视频，同样平铺在运行目录：
 
 ```
-videos/
-├── human_skeleton.mp4                  # 提取出的人体 3D 骨架
-├── mixamo_skeleton.mp4                 # Mixamo rig 骨架
-├── mixamo_character.mp4                # 带皮 Mixamo 角色
-└── compare.mp4                         # 四宫格：左上原片 / 右上 Mixamo 骨架
-                                        #         左下人体骨架 / 右下角色
-```
-
-**照片输入**则写 `images/`（四种图和上面一一对应，外加一条绕转）：
-
-```
-images/
-├── human_skeleton.png                  # 提取出的人体 3D 骨架
-├── mixamo_skeleton.png                 # Mixamo rig 骨架
-├── mixamo_character.png                # 带皮 Mixamo 角色
-├── compare.png                         # 四宫格：左上原图 / 右上 Mixamo 骨架
+├── pose_human_skeleton.png             # 提取出的人体 3D 骨架
+├── pose_mixamo_skeleton.png            # Mixamo rig 骨架
+├── pose_mixamo_character.png           # 带皮 Mixamo 角色
+├── pose_compare.png                    # 四宫格：左上原图 / 右上 Mixamo 骨架
 │                                       #         左下人体骨架 / 右下角色
-└── before_after_360_compare.mp4        # 左：原图
+└── pose_before_after_360_compare.mp4   # 左：原图
                                         # 右：10° 俯视绕角色转一圈
 ```
 
-带上 `--detect-hands` 时，`skeleton_motion.npz` 里还有手指旋转，`mixamo_rotations.npz` 和 `mixamo_character.glb` 会包含那 30 根手指骨。没有这个开关、复用的骨架里也没有手部动作时，这些骨头停在静息姿势。
+旧目录的固定文件名和 `videos/`、`images/` 布局仍可读取。运行记录的
+`outputs` 保存实际文件名；Blender 导入、诊断和导出的 review notes 均支持新布局。
 
-`mixamo_character.glb` 用 Blender 打开：File → Import → glTF 2.0 (.glb/.gltf)。导入后若镜头对不准，选中角色网格，再 View → Frame Selected。头和手上那堆球是骨头的显示形状，不是模型：在 Outliner 里隐藏 **Icosphere** 和骨架（armature），留下带皮网格。场景 FPS 按 `run.json` 里的 `fps` 设置，时间轴设为第 0 帧到第 `n_frames` − 1 帧，这样播放才会和原片一样长，帧号也和 `diagnostics.json` 对得上。视频 run 对照 `videos/mixamo_character.mp4`，照片 run 对照 `images/mixamo_character.png` 或那条绕转视频。
+带上 `--detect-hands` 时，`<前缀>_skeleton.npz` 里还有手指旋转，`<前缀>_rotations.npz` 和 `<前缀>_character.glb` 会包含那 30 根手指骨。没有这个开关、复用的骨架里也没有手部动作时，这些骨头停在静息姿势。
+
+`<前缀>_character.glb` 用 Blender 打开：File → Import → glTF 2.0 (.glb/.gltf)。导入后若镜头对不准，选中角色网格，再 View → Frame Selected。头和手上那堆球是骨头的显示形状，不是模型：在 Outliner 里隐藏 **Icosphere** 和骨架（armature），留下带皮网格。场景 FPS 按 `<前缀>_run.json` 里的 `fps` 设置，时间轴设为第 0 帧到第 `n_frames` − 1 帧，这样播放才会和原片一样长，帧号也和 `<前缀>_diagnostics.json` 对得上。视频 run 对照 `<前缀>_compare.mp4`，照片 run 对照 `<前缀>_mixamo_character.png` 或那条绕转视频。
 
 ## 许可证
 

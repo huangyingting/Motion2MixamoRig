@@ -31,10 +31,10 @@ Inference weights (~5 GB) auto-download into `weights/` on the first run.
 
 ```bash
 m2mr doctor        # verify assets + dependencies; prints what is missing and where to get it
-m2mr run           # latest video in assets/video/ + assets/mixamo/Y_Bot.fbx
+m2mr run           # latest video in assets/video/ + assets/mixamo/X_Bot.fbx
 m2mr run --video assets/video/dance.mp4 --rig assets/mixamo/Vampire.fbx
-m2mr run --image assets/image/pose.jpg --rig assets/mixamo/Y_Bot.fbx
-m2mr run --skeleton outputs/<run>/skeleton_motion.npz --rig ...   # reuse extraction, swap rig
+m2mr run --image assets/image/pose.jpg --rig assets/mixamo/X_Bot.fbx
+m2mr run --skeleton outputs/<run>/<source>_skeleton.npz --rig ... # reuse extraction, swap rig
 m2mr run --output-dir DIR --progress-jsonl FILE --no-preview      # Blender Extension / automation
 m2mr run --no-foot-lock ...                                        # keep the raw retarget (planted feet are pinned by default)
 m2mr run --set-extractor gvhmr --detect-hands --hand-smooth 0.08  # HaMeR fingers; needs assets/body_models/mano/MANO_RIGHT.pkl
@@ -46,6 +46,11 @@ m2mr diagnose outputs/<run> [--visualize] [--threshold-cm N]      # re-check sel
 Extraction is the slow step; reuse it with `--skeleton` when only the rig changes.
 
 ## After a generation
+
+New runs use source-prefixed files: `<source>_run.json`,
+`<source>_diagnostics.json` and `<source>_diagnostics.html`. The fixed filenames
+mentioned below also describe legacy runs; always use the actual filenames in
+the run report's `outputs` mapping and in a review file's `files` list.
 
 When an agent finishes a motion for the user (`m2mr run`, or a Blender job), the message that says it is done also names the quality report. That file is `diagnostics.json` in the run directory: which body parts intersect, on which frames, and how deep. A failed check does not fail the run. If the file is missing, say so and offer `m2mr diagnose <run>`. If they want the picture, `m2mr diagnose <run> --visualize` writes `diagnostics.html`; in Blender, **Open HTML Report** does the same. Tell them they can open it if they want. Do not start a revision until they ask.
 
@@ -109,15 +114,18 @@ Smoke-test checklist: [`docs/blender-extension.md`](docs/blender-extension.md).
 
 ## Outputs
 
-Each run writes `outputs/<YYYYMMDD_HHMMSS>_<source>/`:
+Each run writes `outputs/<YYYYMMDD_HHMMSS>_<source>/`. All outputs are flat in
+that folder with the source file's stem as a prefix; only internal extractor
+intermediates stay under `cache/`. Old fixed-name runs remain readable.
 
-- `run.json` — inputs, timings, output listing
-- `skeleton_motion.npz` — 3D human skeleton (24 SMPL joints, Y-up meters) + `foot_contact` (F, 4: left ankle, left foot, right ankle, right foot static probability from GVHMR; older runs read it from `cache/*/hmr4d_results.pt`)
-- `mixamo_rotations.npz` — per-bone animation rotations (quaternion wxyz; convention string inside)
-- `mixamo_character.glb` — skinned character + clip (glTF 2.0; Blender: File → Import → glTF 2.0)
-- `diagnostics.json` — self-intersection report on the GLB (body-part pairs, frame ranges, depth in cm; frames counted from 0); summary also in `run.json`. Parts joined at a joint are not compared. No floor check. `m2mr diagnose <run> [--visualize] [--threshold-cm N]` re-checks a run; `--visualize` adds `diagnostics.html`. The report's 3D view keeps fixed floor markers on y=0 (0.5 m crosses, larger metre marks, green origin) so movement can be judged against the floor. Eye notes on that motion are a separate file; see Review notes.
-- Video in: `videos/human_skeleton.mp4`, `videos/mixamo_skeleton.mp4`, `videos/mixamo_character.mp4`, `videos/compare.mp4` (2x2: original / mixamo skeleton / human skeleton / character)
-- Photo in: the same four views as PNG under `images/`, plus `images/before_after_360_compare.mp4` (left original / right 10° orbit of the rig)
+- `<source>_run.json` — inputs, timings, output listing
+- `<source>_skeleton.npz` — 3D human skeleton (24 SMPL joints, Y-up meters) + `foot_contact` (F, 4: left ankle, left foot, right ankle, right foot static probability from GVHMR; older runs read it from `cache/*/hmr4d_results.pt`)
+- `<source>_rotations.npz` — per-bone animation rotations (quaternion wxyz; convention string inside)
+- `<source>.bvh` — skeleton animation; no duplicate fixed-name BVH
+- `<source>_character.glb` — skinned character + clip (glTF 2.0; Blender: File → Import → glTF 2.0)
+- `<source>_diagnostics.json` — self-intersection report on the GLB (body-part pairs, frame ranges, depth in cm; frames counted from 0); summary also in `<source>_run.json`. Parts joined at a joint are not compared. No floor check. `m2mr diagnose <run> [--visualize] [--threshold-cm N]` re-checks a run; `--visualize` adds `<source>_diagnostics.html`. The report's 3D view keeps fixed floor markers on y=0 (0.5 m crosses, larger metre marks, green origin) so movement can be judged against the floor. Eye notes on that motion are a separate file; see Review notes.
+- Video in: only `<source>_compare.mp4` (2x2: original / mixamo skeleton / human skeleton / character); individual panel MP4s are not saved.
+- Photo in: `<source>_human_skeleton.png`, `<source>_mixamo_skeleton.png`, `<source>_mixamo_character.png`, `<source>_compare.png`, plus `<source>_before_after_360_compare.mp4` (left original / right 10° orbit of the rig).
 
 ## Review notes
 

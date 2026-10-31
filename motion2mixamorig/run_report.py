@@ -1,4 +1,4 @@
-"""Write and merge `run.json` for a single pipeline run."""
+"""Write and merge the source-prefixed run report for a pipeline run."""
 
 from __future__ import annotations
 
@@ -6,11 +6,17 @@ import json
 from pathlib import Path
 from typing import Any
 
+from .paths import find_run_file, run_output_path
+
 
 def write_run_json(run_dir: Path, report: dict[str, Any]) -> Path:
     run_dir = Path(run_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
-    path = run_dir / "run.json"
+    source = report.get("image") or report.get("video")
+    path = (
+        run_output_path(run_dir, Path(source), "run.json")
+        if source else find_run_file(run_dir, "run.json")
+    )
     path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     return path
 
@@ -29,7 +35,7 @@ def write_failed_report(
     run_dir = Path(run_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
     report: dict[str, Any] = {}
-    existing = run_dir / "run.json"
+    existing = find_run_file(run_dir, "run.json")
     if existing.is_file():
         try:
             loaded = json.loads(existing.read_text(encoding="utf-8"))
@@ -49,4 +55,7 @@ def write_failed_report(
         for key, value in extra.items():
             if key not in {"status", "stage", "error_code", "message"}:
                 report[key] = value
+    if existing.is_file():
+        existing.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+        return existing
     return write_run_json(run_dir, report)

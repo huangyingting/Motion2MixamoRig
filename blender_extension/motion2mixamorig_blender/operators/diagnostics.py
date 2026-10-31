@@ -22,6 +22,7 @@ from ..services.backend import (
     terminate_process,
 )
 from ..services.diagnostics_reader import load_diagnostics, step_problem
+from ..services.result_reader import find_result_file
 
 
 def part_label(part: str) -> str:
@@ -63,7 +64,6 @@ class M2MR_OT_diag_step(Operator):
         return {"FINISHED"}
 
 
-_REPORT_HTML = "diagnostics.html"
 _REPORT_JSON = "diagnostics.json"
 _REPORT_LOG = "diagnose.log"
 _REPORT_POLL_S = 0.5
@@ -81,7 +81,8 @@ def report_state(run_dir: str) -> str:
 
 
 def _report_is_current(run_dir: Path) -> bool:
-    html, data = run_dir / _REPORT_HTML, run_dir / _REPORT_JSON
+    data = find_result_file(run_dir, _REPORT_JSON)
+    html = data.with_suffix(".html")
     return html.is_file() and (not data.is_file() or html.stat().st_mtime >= data.stat().st_mtime)
 
 
@@ -100,7 +101,7 @@ class M2MR_OT_diag_report(Operator):
             self.report({"ERROR"}, t("err_output_missing"))
             return {"CANCELLED"}
         if _report_is_current(run_dir):
-            open_path(run_dir / _REPORT_HTML)
+            open_path(find_result_file(run_dir, _REPORT_JSON).with_suffix(".html"))
             return {"FINISHED"}
         if _report.get("state") == "building":
             self.report({"INFO"}, t("diag_report_building"))
@@ -139,10 +140,11 @@ def _poll_report() -> float | None:
     except OSError:
         pass
     run_dir = _report["dir"]
-    ok = process.returncode == 0 and (run_dir / _REPORT_HTML).is_file()
+    html = find_result_file(run_dir, _REPORT_JSON).with_suffix(".html")
+    ok = process.returncode == 0 and html.is_file()
     _report.update(process=None, log_file=None, state="" if ok else "failed")
     if ok:
-        open_path(run_dir / _REPORT_HTML)
+        open_path(html)
     _redraw_sidebar(None)
     return None
 

@@ -123,7 +123,7 @@ from pathlib import Path
 import numpy as np
 
 from .fbx_skeleton import bone_suffix
-from .kinematics import MixamoRig, forward_kinematics
+from .kinematics import forward_kinematics
 from .skinned_mesh import YBotAsset, load_character_asset
 
 
@@ -150,12 +150,6 @@ def _rotmat_to_euler_zxy_deg(r: np.ndarray) -> tuple[float, float, float]:
     return z * rad2deg, x * rad2deg, y * rad2deg
 
 
-def _compute_world_bind_positions(rig: MixamoRig) -> dict[str, np.ndarray]:
-    """Compute world-space bind positions (in rig units, cm) for every bone."""
-    fk_rest = forward_kinematics(rig)
-    return {name: np.asarray(mat[:3, 3], dtype=np.float64) for name, mat in fk_rest.items()}
-
-
 def write_bvh(
     out_path: Path,
     asset: YBotAsset,
@@ -172,14 +166,14 @@ def write_bvh(
     - Bone names strip any `mixamorig:` prefix (colons break Three.js PropertyBinding).
     - `ROOT Hips` uses `OFFSET 0 0 0` so `BVHLoader` does not double-add root offset.
     - All joint axes at rest are aligned with the global coordinate axes (identity rest
-      orientation). At frame `t`, if a bone's world rotation is `W_t[i]` and its parent's
-      world rotation is `W_t[p]`, the BVH joint rotation matrix is:
-          `R_bvh[i] = W_t[p]^T @ W_t[i]` (and `W_t[root]` for the root joint).
+      orientation). Remove each bone's world bind rotation first:
+          `D_t[i] = W_t[i] @ W_bind[i]^T`
+      Then the BVH joint rotation is `D_t[p]^T @ D_t[i]` (root: `D_t[root]`).
     """
     rig = asset.rig
     root_name = rig.root
-    rest_pos_cm = _compute_world_bind_positions(rig)
-    rest_pos_m = {name: pos * scale for name, pos in rest_pos_cm.items()}
+    fk_rest = forward_kinematics(rig)
+    rest_pos_m = {name: mat[:3, 3] * scale for name, mat in fk_rest.items()}
 
     joint_order: list[str] = []
     lines: list[str] = ["HIERARCHY"]
@@ -235,6 +229,9 @@ def write_bvh(
 
     for f_idx in range(n_frames):
         fk = forward_kinematics(rig, r_anim_rig[f_idx], hips_cm_rig[f_idx])
+        world_deltas = {
+            name: mat[:3, :3] @ fk_rest[name][:3, :3].T for name, mat in fk.items()
+        }
         root_pos = fk[root_name][:3, 3] * scale
         vals: list[str] = [
             f"{root_pos[0]:.6f}",
@@ -243,11 +240,11 @@ def write_bvh(
         ]
         for name in joint_order:
             bone = rig.bones[name]
-            w_curr = fk[name][:3, :3]
+            w_curr = world_deltas[name]
             if bone.parent is None:
                 r_bvh = w_curr
             else:
-                w_parent = fk[bone.parent][:3, :3]
+                w_parent = world_deltas[bone.parent]
                 r_bvh = w_parent.T @ w_curr
             z_deg, x_deg, y_deg = _rotmat_to_euler_zxy_deg(r_bvh)
             vals.append(f"{z_deg:.6f}")
@@ -269,7 +266,7 @@ def write_bvh_from_npz(
     scale: float = 0.01,
 ) -> Path:
     """Export a `.bvh` file directly from a saved `mixamo_rotations.npz` artifact."""
-    from .kinematics import rotmat_from_quat_wxyz
+    from scipy.spatial.transform import Rotation
 
     data = np.load(rotations_npz, allow_pickle=True)
     bone_names = [str(b) for b in data["bone_names"]]
@@ -284,7 +281,9 @@ def write_bvh_from_npz(
     for i in range(n_frames):
         frame_rots: dict[str, np.ndarray] = {}
         for b_idx, b_name in enumerate(bone_names):
-            frame_rots[b_name] = rotmat_from_quat_wxyz(q_rig[i, b_idx])
+            frame_rots[b_name] = Rotation.from_quat(
+                q_rig[i, b_idx][[1, 2, 3, 0]]
+            ).as_matrix()
         r_anim_rig.append(frame_rots)
 
     return write_bvh(out_bvh, asset, r_anim_rig, hips_cm_rig, fps, scale=scale)
@@ -357,21 +356,19 @@ def download_youtube_video(
     filename_stem: str | None = None,
     proxy: str | None = None,
 ) -> Path:
-    """Download `url` as an H.264/MP4 file into `dest_dir` and return the saved file path."""
+    """Download via Tor by default; an explicit proxy (empty for direct) overrides it."""
     dest_dir = Path(dest_dir).resolve()
     dest_dir.mkdir(parents=True, exist_ok=True)
     yt_dlp = _yt_dlp_binary()
 
-    env_proxy = proxy or os.environ.get("YT_DLP_PROXY")
-    tor_proxy = _ensure_tor_proxy()
-    if env_proxy:
-        proxy_candidates: list[str | None] = [env_proxy]
-    elif tor_proxy:
-        # Try direct first on residential machines, then Tor proxy if datacenter IP is blocked;
-        # or if Tor is open, try Tor then direct.
-        proxy_candidates = [None, tor_proxy]
-    else:
-        proxy_candidates = [None]
+    selected_proxy = proxy if proxy is not None else os.environ.get("YT_DLP_PROXY")
+    if selected_proxy is None:
+        selected_proxy = _ensure_tor_proxy()
+        if selected_proxy is None:
+            raise RuntimeError(
+                "Tor proxy is unavailable at 127.0.0.1:9050. Start Tor, supply --proxy URL, "
+                'or explicitly use --proxy "" for a direct connection.'
+            )
 
     out_tmpl = (
         str(dest_dir / f"{filename_stem}.%(ext)s")
@@ -379,48 +376,40 @@ def download_youtube_video(
         else str(dest_dir / "%(id)s.%(ext)s")
     )
 
-    last_err = ""
-    for candidate in proxy_candidates:
-        cmd = [
-            yt_dlp,
-            "--no-playlist",
-            "--js-runtimes",
-            "node",
-            "-S",
-            "vcodec:h264,res,acodec:m4a",
-            "-f",
-            "bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/bv*+ba/b",
-            "--merge-output-format",
-            "mp4",
-            "--print",
-            "after_move:filepath",
-            "-o",
-            out_tmpl,
-        ]
-        if candidate:
-            cmd.extend(["--proxy", candidate])
-        cmd.append(url)
-
-        label = f"via proxy {candidate}" if candidate else "direct"
-        print(f"downloading {url} ({label}) ...")
-        proc = subprocess.run(cmd, text=True, capture_output=True)
-        if proc.returncode == 0:
-            lines = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
-            for line in reversed(lines):
-                p = Path(line)
-                if p.is_file():
-                    print(f"downloaded  {p}")
-                    return p
-            mp4s = sorted(dest_dir.glob("*.mp4"), key=lambda p: p.stat().st_mtime, reverse=True)
-            if mp4s:
-                print(f"downloaded  {mp4s[0]}")
-                return mp4s[0]
-        last_err = (proc.stderr or proc.stdout or "").strip()
-        print(
-            f"warning: yt-dlp ({label}) failed: "
-            f"{last_err.splitlines()[-1] if last_err else 'unknown error'}"
-        )
-
+    cmd = [
+        yt_dlp,
+        "--no-playlist",
+        "--js-runtimes",
+        "node",
+        "-S",
+        "vcodec:h264,res,acodec:m4a",
+        "-f",
+        "bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/bv*+ba/b",
+        "--merge-output-format",
+        "mp4",
+        "--print",
+        "after_move:filepath",
+        "-o",
+        out_tmpl,
+        "--proxy",
+        selected_proxy,
+        url,
+    ]
+    label = f"via proxy {selected_proxy}" if selected_proxy else "direct"
+    print(f"downloading {url} ({label}) ...")
+    proc = subprocess.run(cmd, text=True, capture_output=True)
+    if proc.returncode == 0:
+        lines = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+        for line in reversed(lines):
+            p = Path(line)
+            if p.is_file():
+                print(f"downloaded  {p}")
+                return p
+        mp4s = sorted(dest_dir.glob("*.mp4"), key=lambda p: p.stat().st_mtime, reverse=True)
+        if mp4s:
+            print(f"downloaded  {mp4s[0]}")
+            return mp4s[0]
+    last_err = (proc.stderr or proc.stdout or "").strip()
     raise RuntimeError(f"Failed to download {url} with yt-dlp:\n{last_err}")
 
 
@@ -489,19 +478,21 @@ def run_youtube_to_bvh(
         foot_lock=foot_lock,
     )
 
-    bvh_path = run_dir / "mixamo_motion.bvh"
-    named_bvh = run_dir / f"{video_path.stem}.bvh"
-    if bvh_path.is_file() and named_bvh.resolve() != bvh_path.resolve():
-        shutil.copy2(bvh_path, named_bvh)
+    bvh_path = run_dir / f"{video_path.stem}.bvh"
 
     print("\n=== Output Summary ===")
     print(f"Folder:    {run_dir}")
     print(f"Video:     {video_path}")
-    print(f"BVH file:  {named_bvh}")
-    print(f"BVH (std): {bvh_path}")
-    print(f"GLB file:  {run_dir / 'mixamo_character.glb'}")
-    if not no_preview and (run_dir / "videos" / "compare.mp4").is_file():
-        print(f"Preview:   {run_dir / 'videos' / 'compare.mp4'}")
+    print(f"BVH file:  {bvh_path}")
+    glb_path = run_dir / f"{video_path.stem}_character.glb"
+    if not glb_path.is_file():
+        glb_path = run_dir / "mixamo_character.glb"
+    print(f"GLB file:  {glb_path}")
+    preview = run_dir / f"{video_path.stem}_compare.mp4"
+    if not preview.is_file():
+        preview = run_dir / "videos" / "compare.mp4"
+    if not no_preview and preview.is_file():
+        print(f"Preview:   {preview}")
     return run_dir
 
 
@@ -534,7 +525,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument(
         "--rig",
         default=None,
-        help="Mixamo character .fbx (default: assets/mixamo/Y_Bot.fbx)",
+        help="Mixamo character .fbx (default: assets/mixamo/X_Bot.fbx)",
     )
     parser.add_argument(
         "--device",
@@ -566,7 +557,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument(
         "--proxy",
         default=None,
-        help="Optional proxy URL for yt-dlp (e.g. socks5h://127.0.0.1:9050)",
+        help='Proxy override (default: local Tor or YT_DLP_PROXY); use --proxy "" for direct access',
     )
     args = parser.parse_args(argv)
     out_dir = args.output_dir_flag or args.output_dir_pos
@@ -598,6 +589,13 @@ from pathlib import Path
 
 root = Path(sys.argv[1])
 
+paths_py = root / "motion2mixamorig" / "paths.py"
+paths_text = paths_py.read_text(encoding="utf-8").replace(
+    'DEFAULT_RIG = MIXAMO_DIR / "Y_Bot.fbx"',
+    'DEFAULT_RIG = MIXAMO_DIR / "X_Bot.fbx"',
+)
+paths_py.write_text(paths_text, encoding="utf-8")
+
 # 1. Patch pipeline.py to call write_bvh alongside write_glb
 pipeline_py = root / "motion2mixamorig" / "pipeline.py"
 text = pipeline_py.read_text(encoding="utf-8")
@@ -606,17 +604,18 @@ if "from .mixamo.bvh import write_bvh" not in text:
         "from .mixamo.gltf import write_glb\n",
         "from .mixamo.bvh import write_bvh\nfrom .mixamo.gltf import write_glb\n",
     )
-if 'bvh_path = run_dir / "mixamo_motion.bvh"' not in text:
+text = text.replace(
+    'bvh_path = run_dir / "mixamo_motion.bvh"',
+    'bvh_path = run_dir / f"{source.stem}.bvh"',
+)
+if 'bvh_path = run_dir / f"{source.stem}.bvh"' not in text:
     text = text.replace(
-        '        glb_path = run_dir / "mixamo_character.glb"\n'
-        '        write_glb(glb_path, asset, anim.r_anim_rig, anim.hips_cm_rig, anim.fps)\n'
         '        print(f"saved {glb_path}")\n',
-        '        glb_path = run_dir / "mixamo_character.glb"\n'
-        '        write_glb(glb_path, asset, anim.r_anim_rig, anim.hips_cm_rig, anim.fps)\n'
         '        print(f"saved {glb_path}")\n\n'
-        '        bvh_path = run_dir / "mixamo_motion.bvh"\n'
+        '        bvh_path = run_dir / f"{source.stem}.bvh"\n'
         '        write_bvh(bvh_path, asset, anim.r_anim_rig, anim.hips_cm_rig, anim.fps)\n'
         '        print(f"saved {bvh_path}")\n',
+        1,
     )
 if '"mixamo_motion_bvh": bvh_path.name' not in text:
     text = text.replace(
@@ -670,9 +669,9 @@ uv pip install --python "$VENV_PY" --no-build-isolation "chumpy==0.70"
 uv pip install --python "$VENV_PY" -e "$INSTALL_DIR" "yt-dlp[default]" yt-dlp-ejs pysocks huggingface_hub
 
 # ------------------------------------------------------------------------------
-# 6. Download required body/hand models (SMPL-X, MANO), Mixamo Y_Bot.fbx & weights
+# 6. Download required body/hand models (SMPL-X, MANO), check X Bot & weights
 # ------------------------------------------------------------------------------
-echo "[6/7] Checking / downloading SMPL-X, MANO, Mixamo Y_Bot.fbx, and model weights..."
+echo "[6/7] Checking / downloading SMPL-X, MANO, and model weights; checking X_Bot.fbx..."
 "$VENV_PY" - "$INSTALL_DIR" "$SKIP_WEIGHTS" <<'EOF_ASSETS'
 import sys
 import urllib.request
@@ -704,13 +703,12 @@ if not mano_pkl.is_file():
 from motion2mixamorig.extractors.hamer import ensure_mano_npz
 ensure_mano_npz()
 
-# 3. Mixamo Y_Bot.fbx
-ybot_path = root / "assets" / "mixamo" / "Y_Bot.fbx"
-if not ybot_path.is_file():
-    print("  -> Downloading Mixamo Y_Bot.fbx...")
-    ybot_path.parent.mkdir(parents=True, exist_ok=True)
-    url = "https://raw.githubusercontent.com/Glitshy/Godot-Lag-Compensation/main/Models/Y_Bot.fbx"
-    urllib.request.urlretrieve(url, ybot_path)
+# 3. Mixamo X Bot is supplied under the user's Adobe account.
+xbot_path = root / "assets" / "mixamo" / "X_Bot.fbx"
+if not xbot_path.is_file():
+    print(f"  -> Missing default rig: {xbot_path}")
+    print("     Download X Bot from https://www.mixamo.com/ (FBX Binary, T-pose).")
+    print("     Rename X Bot.fbx to X_Bot.fbx and place it at the path above.")
 
 # 4. Pre-download GVHMR + HaMeR weights unless --skip-weights was passed
 if not skip_weights:

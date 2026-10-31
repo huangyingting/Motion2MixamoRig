@@ -1,4 +1,4 @@
-"""Read `run.json` and turn fps / frame counts into Blender-friendly values."""
+"""Read a prefixed or legacy run report and map timing to Blender values."""
 
 from __future__ import annotations
 
@@ -30,6 +30,13 @@ def resolve_run_path(run_dir: Path, value: object) -> Path | None:
     return run_dir / path
 
 
+def find_result_file(run_dir: Path, legacy_name: str) -> Path:
+    """Locate a prefixed report without importing the external backend."""
+    directory = Path(run_dir)
+    matches = sorted(directory.glob(f"*_{legacy_name}"))
+    return matches[0] if len(matches) == 1 else directory / legacy_name
+
+
 def blender_frame_settings(fps: float, n_frames: int) -> dict[str, float | int]:
     """Map a fractional fps onto Blender's integer `fps` + `fps_base`.
 
@@ -54,7 +61,7 @@ def blender_frame_settings(fps: float, n_frames: int) -> dict[str, float | int]:
 
 def read_run_json(run_dir: str | Path) -> RunResult:
     directory = Path(run_dir)
-    path = directory / "run.json"
+    path = find_result_file(directory, "run.json")
     if not path.is_file():
         return RunResult(
             status="missing",

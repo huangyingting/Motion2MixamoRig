@@ -3,12 +3,14 @@
 Everything a run produces lands in its own timestamped folder:
 
     outputs/<YYYYMMDD_HHMMSS>_<source>/
-    ├── run.json                what ran, with what inputs, producing what
-    ├── skeleton_motion.npz     3D human skeleton (24 SMPL joints per frame)
-    ├── mixamo_rotations.npz    per-bone animation rotations for the rig
-    ├── mixamo_character.glb    skinned character + animation (Blender / Unity)
+    ├── <source>_run.json       what ran, with what inputs, producing what
+    ├── <source>_skeleton.npz   3D human skeleton (24 SMPL joints per frame)
+    ├── <source>_rotations.npz  per-bone animation rotations for the rig
+    ├── <source>_character.glb  skinned character + animation (Blender / Unity)
+    ├── <source>.bvh            skeleton animation
+    ├── <source>_compare.mp4    four-panel preview (video input)
     ├── cache/                  extractor intermediates (GVHMR: 2D pose, 3D lift)
-    └── videos/ or images/      four result clips (video in) or four stills (photo in)
+    └── <source>_*.png          still previews (photo input)
 """
 
 from __future__ import annotations
@@ -137,7 +139,7 @@ def run_pipeline(
     try:
         writer.emit("extract", 0.15, "Extracting human motion")
         extract_video = video
-        motion_npz = run_dir / "skeleton_motion.npz"
+        motion_npz = paths.run_output_path(run_dir, source, "skeleton_motion.npz")
         if skeleton_npz is not None:
             import shutil
 
@@ -206,7 +208,7 @@ def run_pipeline(
             hand_mapping=hand_mapping,
         )
 
-        rotations_npz = run_dir / "mixamo_rotations.npz"
+        rotations_npz = paths.run_output_path(run_dir, source, "mixamo_rotations.npz")
         save_mixamo_rotations(
             anim,
             mapping,
@@ -218,11 +220,11 @@ def run_pipeline(
 
         stage = "export"
         writer.emit("export", 0.85, "Writing GLB")
-        glb_path = run_dir / "mixamo_character.glb"
+        glb_path = paths.run_output_path(run_dir, source, "mixamo_character.glb")
         write_glb(glb_path, asset, anim.r_anim_rig, anim.hips_cm_rig, anim.fps)
         print(f"saved {glb_path}")
 
-        bvh_path = run_dir / "mixamo_motion.bvh"
+        bvh_path = run_dir / f"{source.stem}.bvh"
         write_bvh(bvh_path, asset, anim.r_anim_rig, anim.hips_cm_rig, anim.fps)
         print(f"saved {bvh_path}")
 
@@ -237,9 +239,11 @@ def run_pipeline(
         print("diagnosing self-intersection")
         diagnostics = None
         try:
-            diag = diagnose_run(run_dir, verbose=False)
+            diag = diagnose_run(run_dir, source=source, verbose=False)
             diagnostics = diag["summary"]
-            outputs["diagnostics"] = DIAGNOSTICS_JSON
+            outputs["diagnostics"] = paths.run_output_path(
+                run_dir, source, DIAGNOSTICS_JSON
+            ).name
             print(summary_line(diag))
         except Exception as exc:  # noqa: BLE001
             print(f"diagnostics skipped: {exc}")
@@ -250,9 +254,9 @@ def run_pipeline(
             if image is not None:
                 print("rendering result images")
                 previews = render_run_images(
-                    anim, asset, calibration, image, run_dir / "images", verbose=verbose
+                    anim, asset, calibration, image, run_dir, verbose=verbose
                 )
-                outputs["images"] = {k: f"images/{v.name}" for k, v in previews.items()}
+                outputs["images"] = {k: v.name for k, v in previews.items()}
             else:
                 print("rendering result videos")
                 assert extract_video is not None
@@ -261,11 +265,11 @@ def run_pipeline(
                     asset,
                     calibration,
                     extract_video,
-                    run_dir / "videos",
+                    run_dir,
                     original_label="Original Video",
                     verbose=verbose,
                 )
-                outputs["videos"] = {k: f"videos/{v.name}" for k, v in previews.items()}
+                outputs["videos"] = {k: v.name for k, v in previews.items()}
 
         report = {
             "status": "completed",
@@ -300,7 +304,14 @@ def run_pipeline(
         return run_dir
     except Exception as exc:
         error_code, message = classify_error(exc)
-        write_failed_report(run_dir, stage=stage, error_code=error_code, message=message)
+        write_failed_report(
+            run_dir, stage=stage, error_code=error_code, message=message,
+            extra={
+                "video": str(video) if video is not None else None,
+                "image": str(image) if image is not None else None,
+                "rig": str(rig),
+            },
+        )
         writer.emit("failed", _failed_progress(stage), message)
         raise
 

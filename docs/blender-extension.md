@@ -48,9 +48,9 @@ Run this on a clean user state: move `~/Motion2MixamoRig` aside first
 6. Pick a single-person still, a Mixamo FBX, Device **MPS** (or CPU).
 7. Generate with preview off. The UI must stay usable (orbit the viewport).
 8. Confirm stage/progress/log update, then auto-import of the GLB.
-9. Timeline start is 0; end is `n_frames` − 1 from `run.json`; FPS matches.
+9. Timeline start is 0; end is `n_frames` − 1 from `<source>_run.json`; FPS matches.
 10. **Open Output Folder** and **View Full Log** work.
-11. **Diagnostics** box: red cells match `diagnostics.json`; clicking a cell,
+11. **Diagnostics** box: red cells match `<source>_diagnostics.json`; clicking a cell,
     **Previous** and **Next** move the playhead; during playback the triangle
     stays under the current cell. **Open HTML Report** builds the report on the
     first click (Blender opened from the Dock, so the source video is embedded

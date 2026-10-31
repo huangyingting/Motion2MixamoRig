@@ -64,21 +64,19 @@ def download_youtube_video(
     filename_stem: str | None = None,
     proxy: str | None = None,
 ) -> Path:
-    """Download `url` as an H.264/MP4 file into `dest_dir` and return the saved file path."""
+    """Download via Tor by default; an explicit proxy (empty for direct) overrides it."""
     dest_dir = Path(dest_dir).resolve()
     dest_dir.mkdir(parents=True, exist_ok=True)
     yt_dlp = _yt_dlp_binary()
 
-    env_proxy = proxy or os.environ.get("YT_DLP_PROXY")
-    tor_proxy = _ensure_tor_proxy()
-    if env_proxy:
-        proxy_candidates: list[str | None] = [env_proxy]
-    elif tor_proxy:
-        # Try direct first on residential machines, then Tor proxy if datacenter IP is blocked;
-        # or if Tor is open, try Tor then direct.
-        proxy_candidates = [None, tor_proxy]
-    else:
-        proxy_candidates = [None]
+    selected_proxy = proxy if proxy is not None else os.environ.get("YT_DLP_PROXY")
+    if selected_proxy is None:
+        selected_proxy = _ensure_tor_proxy()
+        if selected_proxy is None:
+            raise RuntimeError(
+                "Tor proxy is unavailable at 127.0.0.1:9050. Start Tor, supply --proxy URL, "
+                'or explicitly use --proxy "" for a direct connection.'
+            )
 
     out_tmpl = (
         str(dest_dir / f"{filename_stem}.%(ext)s")
@@ -86,48 +84,40 @@ def download_youtube_video(
         else str(dest_dir / "%(id)s.%(ext)s")
     )
 
-    last_err = ""
-    for candidate in proxy_candidates:
-        cmd = [
-            yt_dlp,
-            "--no-playlist",
-            "--js-runtimes",
-            "node",
-            "-S",
-            "vcodec:h264,res,acodec:m4a",
-            "-f",
-            "bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/bv*+ba/b",
-            "--merge-output-format",
-            "mp4",
-            "--print",
-            "after_move:filepath",
-            "-o",
-            out_tmpl,
-        ]
-        if candidate:
-            cmd.extend(["--proxy", candidate])
-        cmd.append(url)
-
-        label = f"via proxy {candidate}" if candidate else "direct"
-        print(f"downloading {url} ({label}) ...")
-        proc = subprocess.run(cmd, text=True, capture_output=True)
-        if proc.returncode == 0:
-            lines = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
-            for line in reversed(lines):
-                p = Path(line)
-                if p.is_file():
-                    print(f"downloaded  {p}")
-                    return p
-            mp4s = sorted(dest_dir.glob("*.mp4"), key=lambda p: p.stat().st_mtime, reverse=True)
-            if mp4s:
-                print(f"downloaded  {mp4s[0]}")
-                return mp4s[0]
-        last_err = (proc.stderr or proc.stdout or "").strip()
-        print(
-            f"warning: yt-dlp ({label}) failed: "
-            f"{last_err.splitlines()[-1] if last_err else 'unknown error'}"
-        )
-
+    cmd = [
+        yt_dlp,
+        "--no-playlist",
+        "--js-runtimes",
+        "node",
+        "-S",
+        "vcodec:h264,res,acodec:m4a",
+        "-f",
+        "bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/bv*+ba/b",
+        "--merge-output-format",
+        "mp4",
+        "--print",
+        "after_move:filepath",
+        "-o",
+        out_tmpl,
+        "--proxy",
+        selected_proxy,
+        url,
+    ]
+    label = f"via proxy {selected_proxy}" if selected_proxy else "direct"
+    print(f"downloading {url} ({label}) ...")
+    proc = subprocess.run(cmd, text=True, capture_output=True)
+    if proc.returncode == 0:
+        lines = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+        for line in reversed(lines):
+            p = Path(line)
+            if p.is_file():
+                print(f"downloaded  {p}")
+                return p
+        mp4s = sorted(dest_dir.glob("*.mp4"), key=lambda p: p.stat().st_mtime, reverse=True)
+        if mp4s:
+            print(f"downloaded  {mp4s[0]}")
+            return mp4s[0]
+    last_err = (proc.stderr or proc.stdout or "").strip()
     raise RuntimeError(f"Failed to download {url} with yt-dlp:\n{last_err}")
 
 
@@ -196,19 +186,21 @@ def run_youtube_to_bvh(
         foot_lock=foot_lock,
     )
 
-    bvh_path = run_dir / "mixamo_motion.bvh"
-    named_bvh = run_dir / f"{video_path.stem}.bvh"
-    if bvh_path.is_file() and named_bvh.resolve() != bvh_path.resolve():
-        shutil.copy2(bvh_path, named_bvh)
+    bvh_path = run_dir / f"{video_path.stem}.bvh"
 
     print("\n=== Output Summary ===")
     print(f"Folder:    {run_dir}")
     print(f"Video:     {video_path}")
-    print(f"BVH file:  {named_bvh}")
-    print(f"BVH (std): {bvh_path}")
-    print(f"GLB file:  {run_dir / 'mixamo_character.glb'}")
-    if not no_preview and (run_dir / "videos" / "compare.mp4").is_file():
-        print(f"Preview:   {run_dir / 'videos' / 'compare.mp4'}")
+    print(f"BVH file:  {bvh_path}")
+    glb_path = run_dir / f"{video_path.stem}_character.glb"
+    if not glb_path.is_file():
+        glb_path = run_dir / "mixamo_character.glb"
+    print(f"GLB file:  {glb_path}")
+    preview = run_dir / f"{video_path.stem}_compare.mp4"
+    if not preview.is_file():
+        preview = run_dir / "videos" / "compare.mp4"
+    if not no_preview and preview.is_file():
+        print(f"Preview:   {preview}")
     return run_dir
 
 
@@ -241,7 +233,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument(
         "--rig",
         default=None,
-        help="Mixamo character .fbx (default: assets/mixamo/Y_Bot.fbx)",
+        help="Mixamo character .fbx (default: assets/mixamo/X_Bot.fbx)",
     )
     parser.add_argument(
         "--device",
@@ -273,7 +265,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument(
         "--proxy",
         default=None,
-        help="Optional proxy URL for yt-dlp (e.g. socks5h://127.0.0.1:9050)",
+        help='Proxy override (default: local Tor or YT_DLP_PROXY); use --proxy "" for direct access',
     )
     args = parser.parse_args(argv)
     out_dir = args.output_dir_flag or args.output_dir_pos
