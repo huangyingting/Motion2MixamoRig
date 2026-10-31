@@ -34,6 +34,10 @@ Step-by-step instructions, tips, and updating: **[User Guide](docs/user-guide.md
 
 Clone the repository and run the pipeline yourself: start at [Prerequisites](#prerequisites).
 
+For YouTube, TikTok, Douyin, Instagram, X/Twitter, Vimeo, and local files:
+**[Video source guide](docs/video-sources.md)** covers commands, Tor/proxy
+selection, authenticated downloads, outputs, and troubleshooting.
+
 Agents should start with [`AGENTS.md`](AGENTS.md).
 
 https://github.com/user-attachments/assets/37c67642-f36c-4815-bcf3-028ed9546a2f
