@@ -11,11 +11,10 @@ live directly in the run directory:
                               human | character
     before_after_360_compare.mp4   image runs only: original | orbiting rig
 
-The three rendered panels share one perspective camera and one floor grid, so
-they read as views into the same space: an orthographic camera cannot show a
-floor receding to a vanishing point, and without a floor and a contact shadow
-the figure just hangs in black. All of it is fitted once over the whole clip;
-nothing is re-centred per frame.
+The three rendered panels share a fixed rig-scale orthographic camera. Initial
+pelvis heading is aligned for display, and the camera follows horizontal root
+motion while the world-aligned floor grid retains movement cues. Animation
+products are not modified; real crouching and bending remain visible.
 
 Video frames are streamed straight into ffmpeg (which also muxes the source
 video's audio into the comparison), so memory stays flat no matter how long the
@@ -32,7 +31,7 @@ from pathlib import Path
 import numpy as np
 
 from .extract import video_native_fps
-from .mixamo.animation import RetargetedAnimation, all_points, skin_frames
+from .mixamo.animation import RetargetedAnimation, skin_frames
 from .mixamo.kinematics import normalize
 from .mixamo.render import (
     DARK_THEME,
@@ -41,7 +40,6 @@ from .mixamo.render import (
     Ground,
     PerspectiveCamera,
     blank_panel,
-    build_perspective_camera,
     draw_mesh,
     draw_shadow,
     draw_skeleton,
@@ -55,17 +53,6 @@ from .mixamo.retarget import HUMAN_EDGES, MIXAMO_EDGES
 PANEL_H = 720
 MAX_PANEL_W = 1280
 
-# Frames sampled only to bound the mesh for the camera fit and the floor
-# height; never all kept, or the streaming render would gain nothing.
-CAMERA_MESH_SAMPLES = 60
-# Fraction of the panel the whole clip's motion is fitted into.
-CAMERA_FILL = 0.94
-# Pinhole view matching the Mixamo viewport the look was taken from. Level
-# (elevation 0): a pinhole camera standing above the floor still sees it
-# recede, and tilting down makes the chest overhang the hips.
-CAMERA_FOV_DEG = 28.0
-CAMERA_AZIMUTH_DEG = 0.0
-CAMERA_ELEVATION_DEG = 0.0
 # The sole wanders over ~20 cm across a clip, mostly on lifted-leg frames, so
 # the floor goes at a low percentile of it rather than the minimum. Higher and
 # the character sinks in on many frames; lower and it visibly floats on all.
@@ -183,10 +170,9 @@ class _StreamWriter:
                 cmd += ["-ss", f"{audio_start_s:.6f}"]
                 if audio_dur_s is not None:
                     cmd += ["-t", f"{audio_dur_s:.6f}"]
-                # `0:v` is the rendered frames, `1:a:0?` the source audio if
-                # it has any; -shortest stops the audio with the last frame.
+                # Trim audio at input, without letting shorter audio truncate video.
                 cmd += ["-i", str(audio_src), "-map", "0:v:0", "-map", "1:a:0?",
-                        "-c:a", "aac", "-b:a", "192k", "-shortest"]
+                        "-c:a", "aac", "-b:a", "192k"]
             cmd += ["-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "18",
                     "-preset", "medium", "-movflags", "+faststart",
                     str(self.out_path)]
@@ -242,35 +228,11 @@ def _letterbox_still(image: Path, width: int, height: int) -> np.ndarray:
 
 def _setup_view(anim: RetargetedAnimation, asset, calibration, width: int, height: int):
     """Shared camera, floor and backdrops for the three rendered panels."""
-    axes = calibration.rig_axes
-    stride = max(1, anim.n // CAMERA_MESH_SAMPLES)
-    probe = skin_frames(asset, anim, list(range(0, anim.n, stride)))
-    frames_pts = [np.concatenate(v, axis=0) for v in probe]
-    del probe
-    soles = np.array([float(pts[:, 1].min()) for pts in frames_pts])
-    mesh_pts = np.concatenate(frames_pts, axis=0)
-    del frames_pts
+    from .presentation import animation_view
 
-    cam = build_perspective_camera(
-        axes,
-        np.concatenate(
-            [all_points(anim.human_pos), all_points(anim.mixamo_pos), mesh_pts],
-            axis=0,
-        ),
-        width,
-        height,
-        fov_deg=CAMERA_FOV_DEG,
-        azimuth_deg=CAMERA_AZIMUTH_DEG,
-        elevation_deg=CAMERA_ELEVATION_DEG,
-        fill=CAMERA_FILL,
-    )
-    del mesh_pts
-    hips = np.stack([anim.mixamo_pos[i]["mixamorig:Hips"] for i in range(anim.n)])
-    ground = Ground(
-        y=float(np.percentile(soles, FLOOR_PERCENTILE)),
-        cx=float(np.median(hips[:, 0])),
-        cz=float(np.median(hips[:, 2])),
-    )
+    anim.presentation_view = animation_view(anim, asset, calibration, width, height)
+    cam = anim.presentation_view.frame_camera(0)
+    ground = Ground(y=0, cx=0, cz=0)
     backdrop_dark = ground_backdrop(cam, ground, width, height, DARK_THEME)
     backdrop_grid = ground_backdrop(cam, ground, width, height, GRID_THEME)
     faces = [m.faces for m in asset.meshes]
@@ -300,21 +262,29 @@ def _draw_panels(
     colors,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     character = calibration.fbx_path.stem
+    view = getattr(anim, "presentation_view", None)
+    if view is not None:
+        cam = view.frame_camera(i)
+        ground = view.frame_ground(i)
+        backdrop_dark = ground_backdrop(cam, ground, cam.width, cam.height, DARK_THEME)
+        backdrop_grid = ground_backdrop(cam, ground, cam.width, cam.height, GRID_THEME)
 
     p_hum = backdrop_dark.copy()
-    pos = anim.human_pos[i]
+    pos = anim.human_pos[i] if view is None else view.positions(anim.human_pos[i])
     draw_shadow(p_hum, cam, np.stack(list(pos.values())), ground, DARK_THEME)
     draw_skeleton(p_hum, pos, HUMAN_EDGES, cam, 2, DARK_THEME.joint)
     label_panel(p_hum, f"Human Skeleton{stamp}")
 
     p_mix = backdrop_dark.copy()
-    pos = anim.mixamo_pos[i]
+    pos = anim.mixamo_pos[i] if view is None else view.positions(anim.mixamo_pos[i])
     draw_shadow(p_mix, cam, np.stack(list(pos.values())), ground, DARK_THEME)
     draw_skeleton(p_mix, pos, MIXAMO_EDGES, cam, 3, DARK_THEME.joint)
     label_panel(p_mix, f"Mixamo Skeleton{stamp}")
 
     p_char = backdrop_grid.copy()
     verts = skin_frames(asset, anim, [i])[0]
+    if view is not None:
+        verts = [view.points(vertices) for vertices in verts]
     draw_shadow(p_char, cam, np.concatenate(verts, axis=0), ground, GRID_THEME)
     draw_mesh(p_char, verts, faces, colors, cam, CHARACTER_AMBIENT)
     label_panel(p_char, f"{character}{stamp}")
@@ -346,8 +316,7 @@ def render_run_images(
         anim, asset, calibration, width, height
     )
     if verbose:
-        print(f"  camera eye {np.round(cam.eye, 3)}  fov {cam.fov_deg:.1f} deg"
-              f"  floor y {ground.y:+.4f} m")
+        print(f"  camera orthographic  scale {cam.scale:.1f} px/m  floor y {ground.y:+.4f} m")
 
     i = anim.n // 2
     p_orig, p_mix, p_hum, p_char = _draw_panels(
@@ -520,8 +489,7 @@ def render_run_videos(
         anim, asset, calibration, width, height
     )
     if verbose:
-        print(f"  camera eye {np.round(cam.eye, 3)}  fov {cam.fov_deg:.1f} deg"
-              f"  floor y {ground.y:+.4f} m")
+        print(f"  camera orthographic  scale {cam.scale:.1f} px/m  floor y {ground.y:+.4f} m")
 
     audio_start = anim.frames[0] / fps
     audio_dur = anim.n / fps

@@ -7,6 +7,7 @@ spaces in Windows/macOS paths stay intact.
 from __future__ import annotations
 
 import os
+import json
 import signal
 import subprocess
 import sys
@@ -35,10 +36,19 @@ def build_version_argv(python: str | Path) -> list[str]:
     return [os.fspath(as_user_path(python)), "--version"]
 
 
-# Names the add-on may pass to `--set-extractor`. Keep this in step with
-# motion2mixamorig.extractors; the add-on must not import that package.
-EXTRACTORS = ("gvhmr",)
-DEFAULT_EXTRACTOR = "gvhmr"
+def _model_catalog() -> dict:
+    addon = Path(__file__).resolve().parents[1]
+    for root in (addon / "backend", addon.parents[1]):
+        catalog = root / "motion2mixamorig" / "model_catalog.json"
+        if catalog.is_file():
+            return json.loads(catalog.read_text(encoding="utf-8"))
+    raise FileNotFoundError("bundled model catalog is missing; rebuild the extension")
+
+
+_CATALOG = _model_catalog()
+MODEL_SPECS = _CATALOG["models"]
+EXTRACTORS = tuple(MODEL_SPECS)
+DEFAULT_EXTRACTOR = _CATALOG["default"]
 
 
 def mano_model_present(project_dir: str | Path) -> bool:
@@ -101,6 +111,14 @@ def build_run_argv(
         raise ValueError(f"device must be cpu, cuda, or mps, got {device!r}")
     if extractor not in EXTRACTORS:
         raise ValueError(f"extractor must be one of {EXTRACTORS}, got {extractor!r}")
+
+    spec = MODEL_SPECS[extractor]
+    if source_type == "image" and not spec["supports_images"]:
+        raise ValueError(f"{extractor} accepts videos only; use GVHMR for still images")
+    if device not in spec["devices"]:
+        raise ValueError(f"{extractor} requires CUDA")
+    if not spec["hand_model"] and detect_hands:
+        raise ValueError(f"{spec['label']} does not estimate fingers")
 
     cmd = [
         os.fspath(as_user_path(python)),

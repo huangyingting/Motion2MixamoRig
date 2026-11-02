@@ -34,6 +34,8 @@ m2mr doctor        # verify assets + dependencies; prints what is missing and wh
 m2mr run           # latest video in assets/video/ + assets/mixamo/X_Bot.fbx
 m2mr run --video assets/video/dance.mp4 --rig assets/mixamo/Vampire.fbx
 m2mr run --image assets/image/pose.jpg --rig assets/mixamo/X_Bot.fbx
+m2mr track-people --video assets/video/group.mp4 --device cuda   # ID preview + selectable full-clip tracks
+m2mr run --video assets/video/group.mp4 --person-track outputs/group/tracks/<run>/group_person_1.npz --device cuda
 m2mr run --skeleton outputs/<run>/<source>_skeleton.npz --rig ... # reuse extraction, swap rig
 m2mr run --output-dir DIR --progress-jsonl FILE --no-preview      # Blender Extension / automation
 m2mr run --no-foot-lock ...                                        # keep the raw retarget (planted feet are pinned by default)
@@ -44,6 +46,13 @@ m2mr diagnose outputs/<run> [--visualize] [--threshold-cm N]      # re-check sel
 
 `--video` / `--image` and `--rig` combine freely (not `--video` with `--image`).
 Extraction is the slow step; reuse it with `--skeleton` when only the rig changes.
+Group videos require an explicit `--person-track` for GVHMR, ExMR or FlowHMR;
+one dancer is exported per run. `benchmark --person-track` uses the same track
+for all models. Do not disable the default guard or mix tracks in reuse.
+Tracking requires both endpoints and every detection by default; optional
+`track-people --max-gap-frames N` interpolates only short internal 2D box gaps,
+never motion or different IDs. Blank tails must be separately trimmed and
+documented, with the original preserved. Blender's UI remains single-person.
 
 ## After a generation
 
@@ -114,9 +123,19 @@ Smoke-test checklist: [`docs/blender-extension.md`](docs/blender-extension.md).
 
 ## Outputs
 
-Each run writes `outputs/<YYYYMMDD_HHMMSS>_<source>/`. All outputs are flat in
-that folder with the source file's stem as a prefix; only internal extractor
-intermediates stay under `cache/`. Old fixed-name runs remain readable.
+Each run writes `outputs/<source>/<model>/`, without batch folders. The three
+current model directories are `gvhmr` (GVHMR + HaMeR), `exmr` and `flowhmr`;
+finger settings are recorded in the run report, not separate version folders.
+Matching complete outputs are reused; only missing outputs are generated unless
+`--force` is supplied. Files are flat within the model directory and source-prefixed; extractor
+intermediates stay in `cache/`. Shared `<source>_source.json` at the source root
+records source identity, technical media metadata, safe provenance and processing
+reports. The benchmark comparison and report go at the source root.
+Same-stem/different-content inputs are isolated. Explicit
+`--output-dir` remains exact for Blender jobs; reports name their metadata file.
+`m2mr organize-outputs` consolidates current compatible models and caches before
+removing superseded batches, with an `outputs/organization.json` inventory. Old fixed-name runs
+remain readable.
 
 - `<source>_run.json` — inputs, timings, output listing
 - `<source>_skeleton.npz` — 3D human skeleton (24 SMPL joints, Y-up meters) + `foot_contact` (F, 4: left ankle, left foot, right ankle, right foot static probability from GVHMR; older runs read it from `cache/*/hmr4d_results.pt`)

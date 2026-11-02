@@ -11,7 +11,7 @@ from ..i18n import env_status_label, localize, stage_label, status_label, t
 from ..operators.runtime import get_runtime
 from ..preferences import get_preferences
 from ..registration import safe_register_class, safe_unregister_class
-from ..services.backend import tail_text
+from ..services.backend import MODEL_SPECS, tail_text
 
 
 class M2MR_PT_main(Panel):
@@ -128,9 +128,12 @@ class M2MR_PT_main(Panel):
         box.prop(props, "source_path", text=t("source_file"))
         box.prop(props, "rig_path", text=t("mixamo_rig"))
         box.prop(props, "extractor", text=t("extractor"))
-        box.prop(props, "detect_hands", text=t("detect_hands"))
+        hands_row = box.row()
+        hands_row.enabled = bool(MODEL_SPECS[props.extractor]["hand_model"])
+        hands_row.prop(props, "detect_hands", text=t("detect_hands"))
         if props.detect_hands:
-            box.label(text=t("detect_hands_slow"))
+            if props.extractor == "gvhmr":
+                box.label(text=t("detect_hands_slow"))
             box.prop(props, "hand_smooth", text=t("hand_smooth"))
             self._draw_mano(box, prefs, busy)
         box.prop(props, "generate_preview", text=t("generate_preview"))

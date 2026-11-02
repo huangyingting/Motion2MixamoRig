@@ -478,6 +478,9 @@ _add("setup_failed", en="Runtime installation failed", **{"zh-CN": "运行环境
 _add("err_backend_missing", en="This add-on build does not include the Motion2MixamoRig code", **{"zh-CN": "这个插件包里缺少 Motion2MixamoRig 程序代码"})
 _add("extractor", en="Body Model", **{"zh-CN": "身体模型"})
 _add("extractor_gvhmr_desc", en="Recover the 3D skeleton with GVHMR", **{"zh-CN": "用 GVHMR 恢复 3D 骨架"})
+_add("extractor_exmr_desc", en="ExMR video extraction (separate CUDA runtime and assets)", **{"zh-CN": "ExMR 视频提取（需要独立 CUDA 环境和模型）"})
+_add("extractor_flowhmr_desc", en="FlowHMR video extraction (separate runtime and SMPL-H assets)", **{"zh-CN": "FlowHMR 视频提取（需要独立环境和 SMPL-H 模型）"})
+_add("extractor_prompthmr_desc", en="PromptHMR video extraction (separate CUDA runtime; no fingers)", **{"zh-CN": "PromptHMR 视频提取（需要独立 CUDA 环境；无手指）"})
 _add(
     "detect_hands",
     en="Detect Hands",

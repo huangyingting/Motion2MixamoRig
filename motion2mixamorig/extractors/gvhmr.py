@@ -275,9 +275,12 @@ class GvhmrExtractor:
         device: str = "cpu",
         verbose: bool = True,
         detect_hands: bool = False,
+        person_track: Path | None = None,
     ) -> Path:
         source = Path(source)
         if paths.is_image(source):
+            if person_track is not None:
+                raise ValueError("person selection currently accepts videos only")
             with temp_hold_video(source) as hold:
                 return _extract_video(
                     hold,
@@ -295,6 +298,7 @@ class GvhmrExtractor:
             device=device,
             verbose=verbose,
             detect_hands=detect_hands,
+            person_track=person_track,
         )
 
 
@@ -308,6 +312,7 @@ def _extract_video(
     verbose: bool = True,
     source_image: Path | None = None,
     detect_hands: bool = False,
+    person_track: Path | None = None,
 ) -> Path:
     """Run GVHMR on `video` and save skeleton_motion.npz to `output_npz`.
 
@@ -323,17 +328,61 @@ def _extract_video(
         raise FileNotFoundError(video)
 
     output_dir = Path(work_dir) / video.stem
+    selection = None
+    marker = Path(work_dir) / "person_selection.json"
+    if person_track is not None:
+        import json
+        from ..person_tracking import read_person_track
+
+        selection = read_person_track(person_track, video)
+        identity = {
+            "source_sha256": selection["source_sha256"],
+            "person_track_sha256": selection["person_track_sha256"],
+        }
+        if marker.exists():
+            if json.loads(marker.read_text()) != identity:
+                raise ValueError("GVHMR cache belongs to another person selection; use a new output directory")
+        elif output_dir.exists() and any(output_dir.iterdir()):
+            raise ValueError("existing GVHMR cache has no verified person selection; use a new output directory")
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(json.dumps(identity) + "\n")
+    elif marker.exists():
+        raise ValueError("this GVHMR cache requires its original --person-track")
 
     def recover():
-        return gvhmr.recover(
-            str(video),
-            static_camera=static_camera,
-            device=device,
-            pose2d="rtmpose",
-            output_dir=str(output_dir),
-            output_root=str(work_dir),
-            progress=verbose,
-        )
+        from contextlib import nullcontext
+        context = nullcontext()
+        if selection is not None:
+            import importlib
+            import torch
+            from unittest.mock import patch
+            from ..person_tracking import boxes_for_video
+
+            demo = importlib.import_module("gvhmr.cli.demo")
+            preprocess = demo.run_preprocess
+
+            def selected_preprocess(cfg, flip_test=False):
+                if (Path(cfg.output_dir) / "intrinsics_rectified.json").exists():
+                    raise ValueError("rectify the source before person tracking when using lens distortion")
+                boxes = torch.from_numpy(boxes_for_video(selection, Path(cfg.video_path)))
+                Path(cfg.paths.bbx).parent.mkdir(parents=True, exist_ok=True)
+                torch.save({
+                    "bbx_xyxy": boxes,
+                    "bbx_xys": demo.get_bbx_xys_from_xyxy(boxes, base_enlarge=1.2).float(),
+                }, cfg.paths.bbx)
+                return preprocess(cfg, flip_test=flip_test)
+
+            context = patch.object(demo, "run_preprocess", selected_preprocess)
+        with context:
+            return gvhmr.recover(
+                str(video),
+                static_camera=static_camera,
+                device=device,
+                pose2d="rtmpose",
+                output_dir=str(output_dir),
+                output_root=str(work_dir),
+                progress=verbose,
+            )
 
     result = recover()
 
@@ -349,6 +398,12 @@ def _extract_video(
 
     world = result.smpl_params_world
     joints_3d = joints_world_from_smplx(world, device=device)
+    if selection is not None:
+        from .tracking import _video_meta
+
+        staged = Path(getattr(result, "video_path", video))
+        if len(joints_3d) != _video_meta(staged)[2]:
+            raise ValueError("selected GVHMR motion does not cover its complete working video")
     root_translation = _to_numpy(world["transl"]).astype(np.float32)
     root_orientation = _to_numpy(world["global_orient"]).astype(np.float32)
     reported = float(getattr(result, "fps", 0) or 0)
@@ -375,6 +430,10 @@ def _extract_video(
         video=np.array(str(video)),
         image=image,
         foot_contact=contact,
+        **({
+            "person_id": np.asarray(selection["person_id"]),
+            "person_track_sha256": np.asarray(selection["person_track_sha256"]),
+        } if selection is not None else {}),
     )
     if verbose:
         print(f"saved {written}")

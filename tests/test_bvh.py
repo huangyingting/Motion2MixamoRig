@@ -1,8 +1,10 @@
+import json
 import tempfile
 import unittest
 import io
 import sys
 from contextlib import redirect_stdout
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -10,7 +12,9 @@ from unittest.mock import patch
 import numpy as np
 from scipy.spatial.transform import Rotation
 
-from motion2mixamorig.mixamo.bvh import write_bvh, write_bvh_from_npz
+from motion2mixamorig.mixamo.bvh import (
+    bvh_joint_name, canonicalize_bvh, write_bvh, write_bvh_from_npz,
+)
 from motion2mixamorig.mixamo.kinematics import (
     MixamoBone,
     MixamoRig,
@@ -37,6 +41,8 @@ def read_bvh(path):
             stack.pop()
         elif parts[0] == "OFFSET" and stack[-1] is not None:
             nodes[stack[-1]]["offset"] = np.array(parts[1:], dtype=float)
+        elif parts[0] == "OFFSET":
+            nodes[stack[-2]]["end_offset"] = np.array(parts[1:], dtype=float)
         elif parts[0] == "MOTION":
             break
     start = lines.index("MOTION")
@@ -88,7 +94,10 @@ class BvhTests(unittest.TestCase):
         self.assertEqual(len(rows), len(animations))
         for row, anim, translation in zip(rows, animations, translations):
             actual = bvh_positions(nodes, row)
-            expected = forward_kinematics(self.rig, anim, translation)
+            expected = {
+                bvh_joint_name(name): matrix
+                for name, matrix in forward_kinematics(self.rig, anim, translation).items()
+            }
             for name, position in actual.items():
                 np.testing.assert_allclose(
                     position, expected[name][:3, 3] * 0.01, atol=3e-6, rtol=0
@@ -134,6 +143,132 @@ class BvhTests(unittest.TestCase):
             ):
                 path = write_bvh_from_npz(npz, Path(tmp) / "saved.bvh")
             self.assert_matches_fk(path, animations, translations)
+
+    def test_vrm_joint_names_and_terminal_sites_preserve_animation(self):
+        specs = [
+            ("Hips", None, [0, 100, 0]), ("Spine", "Hips", [0, 10, 0]),
+            ("Spine1", "Spine", [0, 10, 0]), ("Spine2", "Spine1", [0, 10, 0]),
+            ("Neck", "Spine2", [0, 10, 0]), ("Head", "Neck", [0, 10, 0]),
+            ("HeadTop_End", "Head", [0, 5, 0]),
+        ]
+        for side, sign in (("Left", 1), ("Right", -1)):
+            specs.extend([
+                (f"{side}Shoulder", "Spine2", [10 * sign, 0, 0]),
+                (f"{side}Arm", f"{side}Shoulder", [10 * sign, 0, 0]),
+                (f"{side}ForeArm", f"{side}Arm", [20 * sign, 0, 0]),
+                (f"{side}Hand", f"{side}ForeArm", [20 * sign, 0, 0]),
+                (f"{side}UpLeg", "Hips", [10 * sign, -5, 0]),
+                (f"{side}Leg", f"{side}UpLeg", [0, -40, 0]),
+                (f"{side}Foot", f"{side}Leg", [0, -40, 0]),
+                (f"{side}ToeBase", f"{side}Foot", [0, 0, 10]),
+                (f"{side}Toe_End", f"{side}ToeBase", [0, 0, 3]),
+            ])
+            for finger in ("Thumb", "Index", "Middle", "Ring", "Pinky"):
+                for segment in range(1, 5):
+                    parent = f"{side}Hand" if segment == 1 else f"{side}Hand{finger}{segment - 1}"
+                    specs.append((f"{side}Hand{finger}{segment}", parent, [3 * sign, 0, 0]))
+        bones = {}
+        for suffix, parent_suffix, translation in specs:
+            name = f"mixamorig:{suffix}"
+            parent = f"mixamorig:{parent_suffix}" if parent_suffix else None
+            local = mat4(np.eye(3), np.asarray(translation, dtype=float))
+            world = local if parent is None else bones[parent].rest_world @ local
+            bones[name] = MixamoBone(name, parent, [], np.eye(3), local[:3, 3], world, local, np.zeros(3))
+            if parent:
+                bones[parent].children.append(name)
+        self.rig = MixamoRig(bones, list(bones), 0.01, Path("test.fbx"))
+        self.asset = SimpleNamespace(rig=self.rig)
+        animation = {
+            "mixamorig:Hips": Rotation.from_euler("XYZ", [15, 25, 10], degrees=True).as_matrix(),
+            "mixamorig:LeftForeArm": Rotation.from_euler("Z", 60, degrees=True).as_matrix(),
+            "mixamorig:LeftHandPinky2": Rotation.from_euler("X", 20, degrees=True).as_matrix(),
+        }
+        translation = np.asarray([1, 110, 2])
+        with tempfile.TemporaryDirectory() as tmp:
+            path = write_bvh(Path(tmp) / "humanoid.bvh", self.asset, [animation], [translation], 30)
+            self.assert_matches_fk(path, [animation], [translation])
+            nodes, rows = read_bvh(path)
+            self.assertEqual(len(nodes), 52)
+            self.assertEqual(rows.shape, (1, 159))
+            parents = {node["name"]: nodes[node["parent"]]["name"] if node["parent"] is not None else None for node in nodes}
+            self.assertEqual(parents["hips"], None)
+            self.assertEqual(parents["neck"], "upperChest")
+            self.assertEqual(parents["leftUpperArm"], "leftShoulder")
+            self.assertEqual(parents["leftThumbMetacarpal"], "leftHand")
+            self.assertEqual(parents["leftThumbProximal"], "leftThumbMetacarpal")
+            self.assertEqual(parents["leftLittleIntermediate"], "leftLittleProximal")
+            self.assertEqual(parents["rightToes"], "rightFoot")
+            self.assertNotIn("HeadTop_End", parents)
+            rest = forward_kinematics(self.rig)
+            by_name = {node["name"]: node for node in nodes}
+            for suffix, parent, _ in specs:
+                if suffix == "HeadTop_End" or suffix.endswith(("4", "Toe_End")):
+                    expected = (rest[f"mixamorig:{suffix}"][:3, 3] - rest[f"mixamorig:{parent}"][:3, 3]) * 0.01
+                    np.testing.assert_allclose(by_name[bvh_joint_name(parent)]["end_offset"], expected)
+            with patch("motion2mixamorig.mixamo.bvh._terminal", return_value=False), patch(
+                "motion2mixamorig.mixamo.bvh.bvh_joint_name",
+                side_effect=lambda name: name.split(":")[-1],
+            ):
+                legacy = write_bvh(Path(tmp) / "old.bvh", self.asset, [animation], [translation], 30)
+            original = legacy.read_bytes()
+            canonicalize_bvh(legacy, Path(tmp) / "converted.bvh")
+            self.assertEqual(legacy.read_bytes(), original)
+            converted_nodes, converted_rows = read_bvh(Path(tmp) / "converted.bvh")
+            self.assertEqual([node["name"] for node in converted_nodes], [node["name"] for node in nodes])
+            np.testing.assert_array_equal(converted_rows, rows)
+            self.assert_matches_fk(Path(tmp) / "converted.bvh", [animation], [translation])
+
+    def test_reused_delivery_updates_bvh_without_changing_original(self):
+        from motion2mixamorig.run_report import copy_run_deliveries
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old = root / "old"
+            old.mkdir()
+            source = root / "clip.mp4"
+            outputs = {
+                "skeleton_motion": "skeleton.npz", "mixamo_rotations": "rotations.npz",
+                "mixamo_character_glb": "character.glb", "mixamo_motion_bvh": "clip.bvh",
+            }
+            (old / "skeleton.npz").touch()
+            (old / "character.glb").touch()
+            translation = self.rig.bones["Hips"].lcl_translation_cm
+            np.savez(
+                old / "rotations.npz", bone_names=self.rig.order,
+                quat_wxyz_rig=np.tile([1, 0, 0, 0], (1, len(self.rig.order), 1)),
+                hips_translation_cm_rig=[translation], fps=30, rig="test.fbx",
+            )
+            path = write_bvh(old / "clip.bvh", self.asset, [{}], [translation], 30)
+            legacy = path.read_text().replace("ROOT hips", "ROOT Hips")
+            path.write_text(legacy)
+            (old / "run.json").write_text(json.dumps({
+                "video": str(source), "rig": "test.fbx", "outputs": outputs,
+            }))
+            metadata = root / "metadata.json"
+            metadata.write_text(json.dumps({"file": {"sha256": "abc"}}))
+            with patch("motion2mixamorig.source_metadata.record_source_run"):
+                report = copy_run_deliveries(old, root / "new", source, metadata)
+            copied = root / "new" / report["outputs"]["mixamo_motion_bvh"]
+            self.assertEqual(path.read_text(), legacy)
+            self.assertIn("ROOT hips", copied.read_text())
+            self.assert_matches_fk(copied, [{}], [translation])
+            broken = root / "broken.bvh"
+            truncated = "\n".join(legacy.splitlines()[:-1]) + "\n"
+            broken.write_text(truncated)
+            with self.assertRaises(ValueError):
+                canonicalize_bvh(broken, broken)
+            self.assertEqual(broken.read_text(), truncated)
+
+    def test_duplicate_humanoid_names_are_rejected_before_writing(self):
+        for name in ("LeftArm", "leftUpperArm"):
+            self.rig.bones[name] = replace(self.rig.bones["Arm"], name=name, children=[])
+            self.rig.order.append(name)
+            self.rig.bones["Hips"].children.append(name)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "ambiguous.bvh"
+            with self.assertRaisesRegex(ValueError, "duplicate BVH humanoid name: leftUpperArm"):
+                write_bvh(path, self.asset, [{}], [np.array([0, 100, 0])], 30)
+            self.assertFalse(path.exists())
 
 
 class YoutubeOutputTests(unittest.TestCase):

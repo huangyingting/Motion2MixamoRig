@@ -40,6 +40,26 @@ selection, authenticated downloads, outputs, and troubleshooting.
 
 Agents should start with [`AGENTS.md`](AGENTS.md).
 
+Optional ExMR, FlowHMR and PromptHMR video connectors, shared or isolated runtime setup,
+and same-clip comparisons: **[Model extractors](docs/model-extractors.md)**.
+These models require additional assets; MAMMA multi-camera capture and PEAR live
+preview are not implemented.
+
+For a same-video, same-rig comparison:
+
+```bash
+m2mr benchmark --video assets/video/dance.mp4 --rig assets/mixamo/X_Bot.fbx
+```
+
+Its `<video>_compare.mp4` is a 2x2 grid: **Original Video / GVHMR + HaMeR /
+ExMR / FlowHMR**. Previews align initial pelvis heading and use a fixed
+rig-scale orthographic camera: depth cannot change character size. The camera
+follows horizontal root movement against a world-aligned floor; real turning,
+crouching and bending remain visible. GLB, BVH and NPZ animations are unchanged.
+ExMR and FlowHMR use native fingers. Single-model runs keep their original
+panel layout with the same display rules. Old previews refresh from saved
+rotations without new inference. Use `--no-preview` for reports only.
+
 https://github.com/user-attachments/assets/37c67642-f36c-4815-bcf3-028ed9546a2f
 
 <p align="center">
@@ -56,7 +76,9 @@ https://github.com/user-attachments/assets/0474ba58-dea7-4538-82a9-cbe35e437c44
 
 ## Prerequisites
 
-Python 3.11+. After cloning, create a virtualenv and install dependencies; the `m2mr` command is then available:
+Python 3.11+ for the base pipeline; use **Python 3.12+** for ExMR and multi-model
+setup. New one-click Blender runtimes use Python 3.12. After cloning, create a
+virtualenv and install dependencies; the `m2mr` command is then available:
 
 ```bash
 git clone https://github.com/MaxLiu22/Motion2MixamoRig.git
@@ -105,7 +127,8 @@ unavailable or the download fails. `YT_DLP_PROXY` overrides the default;
 Use `yt2bvh --proxy ""` (or `YT_DLP_PROXY=""`) to explicitly download directly.
 
 
-Results land in `outputs/<run-time>_<source>/`. Video runs write `videos/`; still runs write `images/`.
+Results land in `outputs/<source>/<model>/`, with source-prefixed files
+and shared `<source>_source.json` media metadata.
 
 ### 1. Check assets and the environment
 
@@ -151,6 +174,21 @@ m2mr run --skeleton outputs/<previous-run-dir>/<source>_skeleton.npz --rig asset
 ```bash
 m2mr run --video assets/video/dance.mp4 --rig assets/mixamo/Vampire.fbx
 ```
+
+For a group **video**, select one dancer first:
+
+```bash
+m2mr track-people --video assets/video/group.mp4 --device cuda
+# Open the generated *_people.jpg, then choose a selectable track from *_people.json.
+m2mr run --video assets/video/group.mp4 \
+  --person-track outputs/group/tracks/<tracking-run>/group_person_1.npz \
+  --device cuda --detect-hands
+```
+
+GVHMR, ExMR and FlowHMR support this selection, including `benchmark
+--person-track`. Each run exports one person; it does not reconstruct everyone
+as a shared scene. The default group-video guard remains enabled. See
+[person selection and tracking limits](docs/model-extractors.md#select-a-dancer-in-a-group-video).
 
 ### 5. A still photo (static pose)
 
@@ -203,21 +241,30 @@ Reusing a previous skeleton:
 
 ## Outputs
 
-Each `m2mr run` creates a directory named by **the time the command started**.
-All outputs are flat in that directory and use the input file's stem as their
-prefix. Extractor intermediates alone remain under `cache/`.
+Outputs are grouped by source filename stem and body model: `gvhmr/`, `exmr/`,
+and `flowhmr/`. There are no batch folders or separate finger-version folders.
+Complete matching results are reused; repeated commands generate only missing
+outputs. Add `--force` to regenerate or change rig, selected dancer or processing
+settings. Products are flat within each model directory; extractor intermediates
+remain under `cache/`.
+Same-stem files with different SHA-256 hashes get separate `<source>__<hash>`
+groups, so neither source identity nor earlier results are overwritten.
 
 ```
-outputs/20260829_193205_dance/          # or …_pose/ for a still
-├── dance_run.json                       # start time, inputs, full command
-├── dance_skeleton.npz                  # 3D human skeleton (reuse with --skeleton)
-├── dance_rotations.npz                 # per-bone Mixamo rotations
-├── dance.bvh                           # skeleton animation, named after the input file
-├── dance_character.glb                 # skinned character, import into Blender / Unity
-├── dance_diagnostics.json              # self-intersection report (see Quick Start step 6)
-├── dance_diagnostics.html              # only after `m2mr diagnose <run> --visualize`
-├── dance_compare.mp4                   # only video preview; omit with --no-preview
-└── cache/                              # reusable extractor intermediates
+outputs/dance/
+├── dance_source.json                   # source identity, media metadata, processing history
+├── dance_compare.mp4                   # three-model comparison from benchmark
+├── dance_benchmark.json
+└── gvhmr/                              # GVHMR + HaMeR; exmr / flowhmr use native fingers
+    ├── dance_run.json                  # start time, inputs, full command
+    ├── dance_skeleton.npz              # 3D human skeleton (reuse with --skeleton)
+    ├── dance_rotations.npz             # per-bone Mixamo rotations
+    ├── dance.bvh
+    ├── dance_character.glb
+    ├── dance_diagnostics.json
+    ├── dance_diagnostics.html          # only after --visualize
+    ├── dance_compare.mp4               # individual run preview, unless --no-preview
+    └── cache/
 ```
 
 Both `m2mr` and `yt2bvh` write one `<source stem>.bvh`: `dance.mp4` becomes
@@ -226,10 +273,35 @@ filename is created. Only the BVH is needed to use the
 skeleton animation; keep `<source>_rotations.npz` and the source FBX rig to
 re-export it later.
 
-**Video input** writes only `<source>_compare.mp4`: a 2x2 comparison of
+**A single video run** writes only `<source>_compare.mp4`: a 2x2 comparison of
 original (top left), Mixamo skeleton (top right), human skeleton (bottom left),
 and character (bottom right). It includes the source audio when ffmpeg is
 available. The individual panels are not written as duplicate MP4 files.
+
+**`m2mr benchmark`** puts the Original / GVHMR + HaMeR / ExMR / FlowHMR
+comparison MP4 and `<source>_benchmark.json` at the source root, with portable
+GLB, BVH, skeleton, rotations, run and diagnostics products under `gvhmr/`,
+`exmr/` and `flowhmr/`. Existing complete models and unchanged comparisons are
+reused without inference or rendering. Model directories do not contain
+single-model preview MP4s; benchmark reuse and output consolidation remove
+those previews while retaining animation products and diagnostics.
+`--force` regenerates the selected outputs.
+
+`<source>_source.json` records SHA-256, filename/path/size, allowlisted
+video/audio codecs, resolution, reported frame rates, time base, frame count
+when available, duration and rotation, plus links to processing reports.
+URL downloads also save the available platform, ID, title, download time and
+sanitized source URL. Credentials, signed query parameters and arbitrary
+container tags are excluded. Unknown historical provenance stays unknown;
+reported frame rates alone do not establish constant or variable frame timing.
+
+`--output-dir` keeps the exact caller-chosen run directory for Blender and
+automation. Single-run source metadata is shared in its parent; an explicit
+benchmark directory contains its shared metadata. Reports reference the actual
+metadata path. Use `m2mr organize-outputs` to consolidate existing deliveries,
+keeping the newest compatible paired-finger outputs and reusable caches before
+removing superseded batches and extra versions. Its inventory is
+`outputs/organization.json`.
 
 **Still input** keeps its four PNG views and turntable, also in the run root:
 

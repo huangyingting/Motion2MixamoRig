@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+import json
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -20,6 +22,7 @@ VIDEO_DIR = ASSETS / "video"
 IMAGE_DIR = ASSETS / "image"
 
 WEIGHTS = PROJECT_ROOT / "weights"
+MODEL_RUNTIMES = WEIGHTS / "runtimes"
 HAMER_WEIGHTS = WEIGHTS / "hamer"
 HAMER_CKPT = HAMER_WEIGHTS / "hamer.ckpt"
 HAMER_MEAN_PARAMS = HAMER_WEIGHTS / "mano_mean_params.npz"
@@ -36,6 +39,7 @@ _OUTPUT_SUFFIXES = {
     "diagnostics.json": "diagnostics.json",
     "diagnostics.html": "diagnostics.html",
     "compare.mp4": "compare.mp4",
+    "person_track.npz": "person_track.npz",
 }
 
 
@@ -92,10 +96,60 @@ def latest_image() -> Path | None:
     return images[0] if images else None
 
 
-def new_run_dir(source: Path, now: datetime | None = None) -> Path:
-    """Create outputs/<YYYYMMDD_HHMMSS>_<source-stem>/ for one `m2mr run`."""
+def source_output_dir(source: Path) -> Path:
+    """Group by source stem; same-name different contents get a hash suffix."""
+    from .source_metadata import source_identity
+
+    source = Path(source)
+    registry = OUTPUTS / "organization.json"
+    if registry.is_file():
+        inventory = json.loads(registry.read_text())
+        if inventory.get("schema") == "m2mr-organization-v2":
+            registered = inventory.get("sources", {}).get(str(source.resolve()))
+            if registered:
+                known = Path(registered).resolve()
+                metadata = known / f"{source.stem}_source.json"
+                if known.is_relative_to(OUTPUTS.resolve()) and metadata.is_file():
+                    if json.loads(metadata.read_text())["file"]["sha256"] == source_identity(source)["sha256"]:
+                        return known
+    stem = re.sub(r'[<>:"/\\|?*]', "_", source.stem).strip(". ") or "source"
+    directory = OUTPUTS / stem
+    metadata = directory / f"{source.stem}_source.json"
+    if metadata.exists():
+        identity = source_identity(source)
+        if json.loads(metadata.read_text())["file"]["sha256"] != identity["sha256"]:
+            directory = OUTPUTS / f"{stem}__{identity['sha256'][:12]}"
+    return directory
+
+
+def new_batch_dir(source: Path, now: datetime | None = None) -> Path:
+    """Allocate an exclusive batch below the source directory."""
     stamp = (now or datetime.now()).strftime("%Y%m%d_%H%M%S")
-    run_dir = OUTPUTS / f"{stamp}_{source.stem}"
+    parent = source_output_dir(source)
+    parent.mkdir(parents=True, exist_ok=True)
+    for index in range(10000):
+        directory = parent / (stamp if index == 0 else f"{stamp}_{index:02d}")
+        try:
+            directory.mkdir()
+            return directory
+        except FileExistsError:
+            continue
+    raise FileExistsError(f"cannot allocate batch under {parent}")
+
+
+def model_variant(name: str, hands: str | None = None) -> str:
+    return f"{name}_{hands}" if hands and hands != name else name
+
+
+def new_run_dir(source: Path, now: datetime | None = None, *, model: str = "gvhmr") -> Path:
+    """Use one stable outputs/<source>/<extractor>/ directory per body model."""
+    from .source_metadata import save_source_metadata
+
+    if not re.fullmatch(r"[a-z][a-z0-9_]*", model):
+        raise ValueError(f"invalid model directory name: {model}")
+    parent = source_output_dir(source)
+    save_source_metadata(source, parent)
+    run_dir = parent / model.split("_", 1)[0]
     run_dir.mkdir(parents=True, exist_ok=True)
     return run_dir
 

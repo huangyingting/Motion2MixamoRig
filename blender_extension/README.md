@@ -29,7 +29,7 @@ launches:
 
 **Install Runtime (one click)** runs `services/runtime_bootstrap.py` with
 Blender’s bundled Python. It downloads [uv](https://github.com/astral-sh/uv),
-which installs CPython 3.11 and the dependencies (~1.4 GB, including the
+which installs CPython 3.12 and the dependencies (~1.4 GB, including the
 `chumpy` no-build-isolation step), then installs the Motion2MixamoRig code that
 ships inside the zip:
 
@@ -176,6 +176,13 @@ Jobs write to:
 BVH, and the GLB.) Outputs are flat; preview-enabled video jobs write only
 `<source>_compare.mp4`. Legacy fixed-name jobs remain readable. With the
 one-click runtime, `<project>` is `~/Motion2MixamoRig/app`.
+
+Blender supplies an explicit job output directory, so it keeps this layout even
+though default CLI runs now use `outputs/<source>/<model>/`. The job's
+run report references its shared `<source>_source.json` in the job directory's
+parent; it stores source SHA-256, technical media metadata and processing
+history. Same-named inputs with different contents receive distinct metadata
+files.
 
 ## After import
 

@@ -1,0 +1,78 @@
+{
+  "default": "gvhmr",
+  "models": {
+    "gvhmr": {
+      "label": "GVHMR", "adapter": "gvhmr", "supports_images": true,
+      "devices": ["cpu", "cuda", "mps"], "hand_model": "hamer",
+      "description_key": "extractor_gvhmr_desc"
+    },
+    "exmr": {
+      "label": "ExMR", "adapter": "external", "supports_images": false,
+      "devices": ["cuda"], "hand_model": "exmr", "description_key": "extractor_exmr_desc",
+      "upstream": "https://github.com/twehrbein/ExMR",
+      "revision": "57e4824b9c532b52ed1c8b12c44000ad41ef4c4c",
+      "python_min": "3.12", "entrypoint": "exmr/pipeline.py",
+      "worker": "recover_exmr",
+      "world_to_shared": [[-1, 0, 0], [0, 1, 0], [0, 0, -1]],
+      "model_type": "smplx", "body_asset": "checkpoints/body_models/smplx/SMPLX_NEUTRAL.npz",
+      "submodules": ["third_party/sam-3d-body"],
+      "packages": [
+        "PyTurboJPEG>=1.8,<2", "pyrender", "PyOpenGL", "freetype-py", "pyglet<2",
+        "accelerate", "braceexpand", "iopath", "portalocker", "roma", "prettytable",
+        "hamer @ git+https://github.com/geopavlakos/hamer.git@3a01849f4148352e9260b69bf28b65d1671a4905",
+        "sapiens @ git+https://github.com/facebookresearch/sapiens2.git@7e5bae88456ac418ff0e58e74106c9fe192055d4"
+      ],
+      "assets": [
+        "checkpoints/exmr/exmr.safetensors", "checkpoints/exmr/config.json",
+        "checkpoints/body_models/smplx/SMPLX_NEUTRAL.npz", "checkpoints/yolo/yolo11m.pt",
+        "checkpoints/sapiens2/sapiens2_1b_pose.safetensors",
+        "checkpoints/sam-3d-body-dinov3/model.ckpt",
+        "checkpoints/sam-3d-body-dinov3/model_config.yaml",
+        "checkpoints/sam-3d-body-dinov3/assets/mhr_model.pt",
+        "checkpoints/hamer/hamer_ckpts/checkpoints/hamer.ckpt",
+        "checkpoints/hamer/data/mano/MANO_RIGHT.pkl", "checkpoints/hamer/data/mano_mean_params.npz"
+      ]
+    },
+    "flowhmr": {
+      "label": "FlowHMR", "adapter": "external", "supports_images": false,
+      "devices": ["cpu", "cuda", "mps"], "hand_model": "flowhmr",
+      "description_key": "extractor_flowhmr_desc",
+      "upstream": "https://github.com/flowhmr/flowhmr",
+      "revision": "e9bd0d711b72ea460c04618e840c0ec4ac5f512a",
+      "python_min": "3.11", "entrypoint": "flowhmr/pipeline/v2m_inference.py",
+      "worker": "recover_flowhmr",
+      "world_to_shared": [[-1, 0, 0], [0, 1, 0], [0, 0, -1]],
+      "model_type": "smplh", "body_asset": "assets/body_models/smplh/neutral/model.npz",
+      "submodules": ["third_party/YOLOX", "third_party/sam-3d-body"],
+      "packages": [
+        "supervision>=0.25,<0.31", "pyDeprecate", "defusedxml", "tabulate",
+        "loguru", "pycocotools", "torchdiffeq==0.2.5", "roma", "braceexpand"
+      ],
+      "assets": [
+        "checkpoints/flowhmr_latest/flowhmr_latest.ckpt", "checkpoints/flowhmr_latest/config.yml",
+        "ckpts/yolox/yolox_l.pth", "ckpts/sam-3d-body-dinov3/model.ckpt",
+        "ckpts/sam-3d-body-dinov3/model_config.yaml", "ckpts/sam-3d-body-dinov3/assets/mhr_model.pt",
+        "assets/body_models/smplh/neutral/model.npz", "assets/body_models/smpl_neutral_J_regressor.pt"
+      ]
+    },
+    "prompthmr": {
+      "label": "PromptHMR", "adapter": "external", "supports_images": false,
+      "devices": ["cuda"], "hand_model": null, "description_key": "extractor_prompthmr_desc",
+      "upstream": "https://github.com/yufu-wang/PromptHMR",
+      "revision": "3b566b7dbb28ce506c7ea972c18693f4c705ce8c",
+      "python_min": "3.11", "entrypoint": "pipeline/pipeline.py",
+      "worker": "recover_prompthmr",
+      "model_type": "smplx", "body_asset": "data/body_models/smplx/SMPLX_NEUTRAL.npz",
+      "submodules": [],
+      "packages": ["filterpy"],
+      "assets": [
+        "pipeline/config.yaml", "data/pretrain/phmr/checkpoint.ckpt", "data/pretrain/phmr/config.yaml",
+        "data/pretrain/phmr_vid/prhmr_release_002.ckpt", "data/pretrain/phmr_vid/prhmr_release_002.yaml",
+        "data/pretrain/sam2_ckpts/keypoint_rcnn_5ad38f.pkl", "data/pretrain/sam2_ckpts/sam2_hiera_tiny.pt",
+        "data/pretrain/vitpose-h-coco_25.pth", "data/body_models/smplx/SMPLX_NEUTRAL.npz",
+        "data/body_models/smpl/SMPL_NEUTRAL.pkl", "data/body_models/smplx2smpl.pkl",
+        "data/body_models/smplx/SMPLX_neutral_array_f32_slim.npz"
+      ]
+    }
+  }
+}

@@ -39,12 +39,21 @@ def _update_show_floor_markers(self, context) -> None:
 
 def _extractor_items(self, context):
     from .i18n import t
+    from .services.backend import MODEL_SPECS
 
     global _EXTRACTOR_ITEMS
-    _EXTRACTOR_ITEMS = (
-        ("gvhmr", "GVHMR", t("extractor_gvhmr_desc")),
+    _EXTRACTOR_ITEMS = tuple(
+        (name, spec["label"], t(spec["description_key"]))
+        for name, spec in MODEL_SPECS.items()
     )
     return _EXTRACTOR_ITEMS
+
+
+def _update_extractor(self, context):
+    from .services.backend import MODEL_SPECS
+
+    if not MODEL_SPECS[self.extractor]["hand_model"]:
+        self.detect_hands = False
 
 
 def _device_items(self, context):
@@ -84,13 +93,14 @@ class M2MRProperties(PropertyGroup):
         name="Body Model",
         description="How the video or still becomes a 3D skeleton",
         items=_extractor_items,
+        update=_update_extractor,
     )
     detect_hands: BoolProperty(
         name="Detect Hands",
         description=(
             "Also run the hand model that belongs to the selected body model "
-            "(GVHMR uses HaMeR). Off leaves the fingers at rest. "
-            "The run takes about twice as long"
+            "(GVHMR uses HaMeR; ExMR/FlowHMR export native fingers). "
+            "Off leaves the fingers at rest. PromptHMR has no finger estimates"
         ),
         default=False,
     )

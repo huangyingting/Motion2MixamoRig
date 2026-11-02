@@ -6,6 +6,8 @@ assets/**
 !assets/**/
 !assets/README.md
 !assets/**/.gitkeep
+/mano_v1_2.zip
+/smplh.tar.xz
 
 # ── Auto-downloaded inference weights (GVHMR / 2D pose, etc.) ─
 weights/**
@@ -29,7 +31,11 @@ dist/
 .env.*
 
 # ── Local tests and editor junk: not committed ───────────────
-tests/
+tests/*
+!tests/test_model_extractors.py
+!tests/test_source_metadata.py
+!tests/test_bvh.py
+!tests/test_person_tracking.py
 scripts/verify_blender_addon.py
 :memory:.ses
 

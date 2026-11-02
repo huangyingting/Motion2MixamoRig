@@ -2,7 +2,7 @@
 
 Everything a run produces lands in its own timestamped folder:
 
-    outputs/<YYYYMMDD_HHMMSS>_<source>/
+    outputs/<source>/<model>/
     ├── <source>_run.json       what ran, with what inputs, producing what
     ├── <source>_skeleton.npz   3D human skeleton (24 SMPL joints per frame)
     ├── <source>_rotations.npz  per-bone animation rotations for the rig
@@ -16,6 +16,7 @@ Everything a run produces lands in its own timestamped folder:
 from __future__ import annotations
 
 import sys
+import json
 import time
 from datetime import datetime
 from pathlib import Path
@@ -104,6 +105,9 @@ def run_pipeline(
     progress_jsonl: Path | None = None,
     no_preview: bool = False,
     foot_lock: bool = True,
+    source_metadata_path: Path | None = None,
+    person_track: Path | None = None,
+    force: bool = False,
 ) -> Path:
     """Full pipeline for one video or still + one rig. Returns the run directory.
 
@@ -112,7 +116,8 @@ def run_pipeline(
     handed to the extractor as-is; GVHMR turns it into a short hold clip.
 
     `output_dir` writes this run into a caller-chosen folder (used by the
-    Blender extension). When omitted, a timestamped directory is created.
+    Blender extension). When omitted, outputs/<source>/<model> is used. Matching
+    complete outputs are reused unless `force` is set.
     `no_preview` still writes the NPZ/GLB products but skips rendered previews.
     `foot_lock` pins planted feet using GVHMR's foot contact (when available).
     """
@@ -127,23 +132,120 @@ def run_pipeline(
     t0 = time.time()
     source = image if image is not None else video
     assert source is not None
+    selection = None
+    if person_track is None and skeleton_npz is not None:
+        with np.load(skeleton_npz, allow_pickle=False) as reused:
+            if "person_track_sha256" in reused.files:
+                raise ValueError("reusing a selected-person skeleton requires its --person-track")
+    if person_track is not None:
+        from .person_tracking import SUPPORTED_EXTRACTORS, read_person_track
+
+        if image is not None or extractor not in SUPPORTED_EXTRACTORS:
+            raise ValueError("person selection requires a video and gvhmr, exmr or flowhmr")
+        selection = read_person_track(person_track, source)
+        if skeleton_npz is not None:
+            with np.load(skeleton_npz, allow_pickle=False) as reused:
+                if str(reused.get("person_track_sha256", "")) != selection["person_track_sha256"]:
+                    raise ValueError("reused skeleton belongs to another or unselected person track")
     if output_dir is not None:
         run_dir = Path(output_dir).resolve()
         run_dir.mkdir(parents=True, exist_ok=True)
     else:
-        run_dir = paths.new_run_dir(source, started)
+        model_name = read_extractor_name(skeleton_npz) if skeleton_npz is not None else extractor
+        hand_name = read_hands_name(skeleton_npz) if skeleton_npz is not None else (
+            getattr(get_extractor(extractor), "hand_model", None) if detect_hands else None
+        )
+        run_dir = paths.new_run_dir(source, started, model=paths.model_variant(model_name or extractor, hand_name))
     print(f"run directory  {run_dir}")
-
+    previous = paths.find_run_file(run_dir, "run.json")
     writer = progress if progress is not None else ProgressWriter(progress_jsonl)
+    if previous.is_file():
+        old = json.loads(previous.read_text())
+        if not force and old.get("person_track_sha256") != (selection["person_track_sha256"] if selection else None):
+            raise ValueError("output directory belongs to another person selection; use --force or a new directory")
+        if force:
+            from .source_metadata import file_digest
+
+            for role in ("diagnostics_html", "videos", "images"):
+                if role != "diagnostics_html" and not no_preview:
+                    continue
+                values = old.get("outputs", {}).get(role, {})
+                names = values.values() if isinstance(values, dict) else [values]
+                for name in names:
+                    if isinstance(name, str) and name:
+                        file = run_dir / name
+                        if file.is_file() and file.resolve().is_relative_to(run_dir):
+                            file.unlink()
+            if old.get("source_sha256") != file_digest(source) or old.get("person_track_sha256") != (
+                selection["person_track_sha256"] if selection else None
+            ):
+                import shutil
+
+                cache = run_dir / "cache"
+                if cache.is_dir():
+                    if cache.is_symlink():
+                        raise ValueError("cannot reset a linked extraction cache")
+                    shutil.rmtree(cache)
+        if not force:
+            from .run_report import completed_run
+
+            expected_model = read_extractor_name(skeleton_npz) if skeleton_npz is not None else extractor
+            expected_hands = getattr(get_extractor(expected_model or extractor), "hand_model", None) if detect_hands else None
+            reused = completed_run(
+                run_dir, source, rig, expected_model or extractor, hands=expected_hands,
+                person_track_sha256=selection["person_track_sha256"] if selection else None,
+                foot_lock=foot_lock, hand_smooth_s=hand_smooth_s if detect_hands else None,
+            )
+            if reused is not None:
+                from .presentation import VIEW_VERSION
+
+                previews = reused.get("outputs", {}).get("images" if image is not None else "videos", {})
+                current_view = (reused.get("presentation") or {}).get("version") == VIEW_VERSION
+                if not no_preview and not (current_view and previews and all(
+                    (run_dir / name).is_file() for name in previews.values()
+                )):
+                    from .preview import render_saved_preview
+
+                    writer.emit("preview", 0.90, "Updating saved animation previews")
+                    render_saved_preview(run_dir, verbose=verbose)
+                print(f"reusing completed output  {run_dir} (use --force to regenerate)")
+                writer.emit("done", 1.0, "Reused completed output")
+                return run_dir
+            if old.get("status") == "completed" and skeleton_npz is None:
+                saved = run_dir / old.get("outputs", {}).get("skeleton_motion", "_missing_")
+                if saved.is_file():
+                    skeleton_npz = saved
+
     stage = "extract"
+    metadata = None
     try:
+        from .source_metadata import save_source_metadata
+
+        metadata = source_metadata_path or save_source_metadata(
+            source, run_dir.parent,
+        )
+        from .source_metadata import file_digest
+
+        source_sha256 = file_digest(source)
+        if json.loads(Path(metadata).read_text())["file"]["sha256"] != source_sha256:
+            raise ValueError("source metadata does not match the input contents")
         writer.emit("extract", 0.15, "Extracting human motion")
         extract_video = video
         motion_npz = paths.run_output_path(run_dir, source, "skeleton_motion.npz")
+        selected_track_path = None
+        if selection is not None:
+            import shutil
+
+            selected_track_path = run_dir / f"{source.stem}_person_track.npz"
+            if Path(person_track).resolve() != selected_track_path.resolve():
+                shutil.copy2(person_track, selected_track_path)
+            if file_digest(selected_track_path) != selection["person_track_sha256"]:
+                raise ValueError("person track changed while copying it into the delivery")
         if skeleton_npz is not None:
             import shutil
 
-            shutil.copy2(skeleton_npz, motion_npz)
+            if Path(skeleton_npz).resolve() != motion_npz.resolve():
+                shutil.copy2(skeleton_npz, motion_npz)
             print(f"reusing skeleton from {skeleton_npz}")
         else:
             if image is not None:
@@ -158,7 +260,12 @@ def run_pipeline(
                 device=device,
                 verbose=verbose,
                 detect_hands=detect_hands,
+                **({"person_track": selected_track_path} if selection is not None else {}),
             )
+        if selection is not None:
+            with np.load(motion_npz, allow_pickle=False) as extracted:
+                if str(extracted.get("person_track_sha256", "")) != selection["person_track_sha256"]:
+                    raise ValueError("extractor did not honor the selected person track")
         if detect_hands and skeleton_npz is not None and not skeleton_has_hands(motion_npz):
             cache_dir = find_body_cache(Path(skeleton_npz).parent)
             if cache_dir is None:
@@ -279,6 +386,7 @@ def run_pipeline(
             "video": None if image is not None else str(video),
             "image": str(image) if image is not None else None,
             "rig": str(rig),
+            "rig_sha256": file_digest(rig),
             "device": device,
             "extractor": (
                 read_extractor_name(motion_npz) if skeleton_npz is not None else extractor
@@ -289,16 +397,31 @@ def run_pipeline(
             "fps": float(motion.fps),
             "n_frames": motion.n_frames,
             "skeleton_reused_from": str(skeleton_npz) if skeleton_npz else None,
+            "source_metadata": str(metadata),
+            "source_sha256": source_sha256,
+            **({
+                "person_id": selection["person_id"],
+                "person_track_sha256": selection["person_track_sha256"],
+                "person_track": str(selected_track_path),
+            } if selection is not None else {}),
             "rest_fk_error": rest_err,
             "rest_skin_error_cm": skin_err,
             "twist_events": len(anim.twist_events),
             "quat_sign_flips": len(anim.sign_events),
             "foot_lock": anim.foot_lock,
+            "foot_lock_requested": foot_lock,
             "ground": anim.ground,
             "diagnostics": diagnostics,
             "outputs": outputs,
         }
-        write_run_json(run_dir, report)
+        if not no_preview:
+            report["presentation"] = anim.presentation_view.metadata()
+        if selection is not None:
+            report["outputs"]["person_track"] = selected_track_path.name
+        report_path = write_run_json(run_dir, report)
+        from .source_metadata import record_source_run
+
+        record_source_run(Path(metadata), report_path, report["extractor"], "completed")
         writer.emit("done", 1.0, "Completed")
         print(f"done in {report['elapsed_s']}s  ->  {run_dir}")
         return run_dir
@@ -310,6 +433,11 @@ def run_pipeline(
                 "video": str(video) if video is not None else None,
                 "image": str(image) if image is not None else None,
                 "rig": str(rig),
+                "source_metadata": str(metadata) if metadata else None,
+                **({
+                    "person_id": selection["person_id"],
+                    "person_track_sha256": selection["person_track_sha256"],
+                } if selection is not None else {}),
             },
         )
         writer.emit("failed", _failed_progress(stage), message)

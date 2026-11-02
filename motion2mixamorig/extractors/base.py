@@ -87,6 +87,7 @@ class MotionExtractor(Protocol):
         device: str = "cpu",
         verbose: bool = True,
         detect_hands: bool = False,
+        person_track: Path | None = None,
     ) -> Path:
         """Write the shared skeleton file for `source` (a video or a still).
 

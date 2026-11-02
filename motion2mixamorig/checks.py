@@ -20,7 +20,7 @@ SMPL_VERTS = 6890
 FBX_BINARY_MAGIC = b"Kaydara FBX Binary"
 
 # Sampled frames for the person-count check. The pipeline maps one body to one
-# rig, so two people in frame is a hard stop — we do not wait for extraction.
+# rig, so group input requires an explicitly verified person track.
 _PERSON_SAMPLES = 16
 _PERSON_CONF = 0.5
 # Ignore postage-stamp extras (audience, posters). A second dancer is larger.
@@ -61,8 +61,16 @@ def _count_people(frame) -> int:
     return n
 
 
-def check_video(path: Path) -> str | None:
-    """Decodable, and a single person on the sampled frames — not a group."""
+def check_video(path: Path, *, person_track: Path | None = None) -> str | None:
+    """Require a single person by default, or an explicit verified full-clip track."""
+    if person_track is not None:
+        from .person_tracking import read_person_track
+
+        try:
+            read_person_track(person_track, path)
+            return None
+        except (OSError, ValueError, KeyError, TypeError, OverflowError) as exc:
+            return f"invalid person selection: {exc}"
     import cv2
 
     cap = cv2.VideoCapture(str(path))
@@ -100,7 +108,8 @@ def check_video(path: Path) -> str | None:
         peak = max(counts)
         return (
             f"shows about {peak} people in frame — this pipeline maps one body "
-            "to one Mixamo rig. Use a clip with a single, clearly visible person"
+            "to one Mixamo rig. Use a single-person clip, or select a full-clip "
+            "person track with `m2mr track-people` and --person-track"
         )
     if max(counts) < 1:
         return (

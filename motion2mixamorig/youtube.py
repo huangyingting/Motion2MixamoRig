@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import shutil
@@ -97,6 +98,8 @@ def download_youtube_video(
         "mp4",
         "--print",
         "after_move:filepath",
+        "--print",
+        'after_move:%(.{id,title,extractor_key})j',
         "-o",
         out_tmpl,
         "--proxy",
@@ -108,15 +111,36 @@ def download_youtube_video(
     proc = subprocess.run(cmd, text=True, capture_output=True)
     if proc.returncode == 0:
         lines = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+        origin = {}
+        for line in lines:
+            if line.startswith("{"):
+                try:
+                    info = json.loads(line)
+                    origin = {
+                        "video_id": info.get("id"), "title": info.get("title"),
+                        "platform": info.get("extractor_key"),
+                    }
+                except json.JSONDecodeError:
+                    continue
+        from .source_metadata import safe_source_url
+
+        origin.update(url=safe_source_url(url), downloaded_at=datetime.now().isoformat())
+
+        def record_origin(video: Path) -> Path:
+            video.with_name(f"{video.stem}_origin.json").write_text(
+                json.dumps(origin, indent=2, ensure_ascii=False) + "\n", encoding="utf-8",
+            )
+            return video
+
         for line in reversed(lines):
             p = Path(line)
             if p.is_file():
                 print(f"downloaded  {p}")
-                return p
+                return record_origin(p)
         mp4s = sorted(dest_dir.glob("*.mp4"), key=lambda p: p.stat().st_mtime, reverse=True)
         if mp4s:
             print(f"downloaded  {mp4s[0]}")
-            return mp4s[0]
+            return record_origin(mp4s[0])
     last_err = (proc.stderr or proc.stdout or "").strip()
     raise RuntimeError(f"Failed to download {url} with yt-dlp:\n{last_err}")
 
@@ -143,6 +167,7 @@ def run_youtube_to_bvh(
     no_preview: bool = False,
     foot_lock: bool = True,
     proxy: str | None = None,
+    force: bool = False,
 ) -> Path:
     """Download a YouTube URL (or use a local video) and write all outputs to `output_dir`."""
     from .pipeline import run_pipeline
@@ -158,13 +183,7 @@ def run_youtube_to_bvh(
         else:
             paths.VIDEO_DIR.mkdir(parents=True, exist_ok=True)
             video_path = download_youtube_video(url_or_video, paths.VIDEO_DIR, proxy=proxy)
-            started = datetime.now()
-            run_dir = paths.new_run_dir(video_path, started)
-            run_dir.mkdir(parents=True, exist_ok=True)
-            copied_video = run_dir / video_path.name
-            if copied_video.resolve() != video_path.resolve():
-                shutil.copy2(video_path, copied_video)
-                video_path = copied_video
+            run_dir = None
     else:
         video_path = Path(url_or_video).resolve()
         if not video_path.is_file():
@@ -173,7 +192,7 @@ def run_youtube_to_bvh(
             run_dir = Path(output_dir).resolve()
             run_dir.mkdir(parents=True, exist_ok=True)
         else:
-            run_dir = paths.new_run_dir(video_path, datetime.now())
+            run_dir = None
 
     run_dir = run_pipeline(
         video_path,
@@ -184,6 +203,7 @@ def run_youtube_to_bvh(
         output_dir=run_dir,
         no_preview=no_preview,
         foot_lock=foot_lock,
+        force=force,
     )
 
     bvh_path = run_dir / f"{video_path.stem}.bvh"
@@ -262,6 +282,7 @@ def main(argv: list[str] | None = None) -> None:
         action="store_true",
         help="Disable foot contact locking",
     )
+    parser.add_argument("--force", action="store_true", help="regenerate an existing output")
     parser.add_argument(
         "--proxy",
         default=None,
@@ -280,6 +301,7 @@ def main(argv: list[str] | None = None) -> None:
             no_preview=args.no_preview,
             foot_lock=not args.no_foot_lock,
             proxy=args.proxy,
+            force=args.force,
         )
     except Exception as exc:  # noqa: BLE001
         print(f"error: {exc}", file=sys.stderr)

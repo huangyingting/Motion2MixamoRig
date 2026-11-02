@@ -50,7 +50,7 @@ UV_ASSETS = {
         "9167d72b3319674b6303c4cbe071854bba13ebdf3d76b1a7cbdc175471fb66d6",
     ),
 }
-PYTHON_VERSION = "3.11"
+PYTHON_VERSION = "3.12"
 # Files copied from the bundled backend into <home>/app (the pip project root).
 BACKEND_ITEMS = ("motion2mixamorig", "pyproject.toml", "LICENSE", "NOTICE.md")
 USER_DIRS = (

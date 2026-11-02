@@ -2,23 +2,28 @@
 
 from __future__ import annotations
 
-from .base import MotionExtractor
-from .gvhmr import GvhmrExtractor
+from functools import lru_cache
+from typing import TYPE_CHECKING
 
-DEFAULT_EXTRACTOR = "gvhmr"
+from ..models import DEFAULT_MODEL, MODEL_SPECS, get_model_spec
 
-_EXTRACTORS: dict[str, MotionExtractor] = {
-    GvhmrExtractor.name: GvhmrExtractor(),
-}
+if TYPE_CHECKING:
+    from .base import MotionExtractor
+
+DEFAULT_EXTRACTOR = DEFAULT_MODEL
 
 
 def extractor_names() -> tuple[str, ...]:
-    return tuple(_EXTRACTORS)
+    return tuple(MODEL_SPECS)
 
 
+@lru_cache(maxsize=None)
 def get_extractor(name: str) -> MotionExtractor:
-    try:
-        return _EXTRACTORS[name]
-    except KeyError as exc:
-        choices = ", ".join(extractor_names())
-        raise ValueError(f"unknown extractor {name!r}; choose from {choices}") from exc
+    spec = get_model_spec(name)
+    if spec["adapter"] == "gvhmr":
+        from .gvhmr import GvhmrExtractor
+
+        return GvhmrExtractor()
+    from .external import ExternalExtractor
+
+    return ExternalExtractor(name)

@@ -17,7 +17,219 @@ from motion2mixamorig import paths
 from motion2mixamorig.run_report import write_failed_report, write_run_json
 
 
+def completed_fixture(directory, source, rig, model, hands=None):
+    from motion2mixamorig.source_metadata import file_digest
+
+    directory.mkdir(parents=True, exist_ok=True)
+    outputs = {
+        "skeleton_motion": f"{source.stem}_skeleton.npz",
+        "mixamo_rotations": f"{source.stem}_rotations.npz",
+        "mixamo_character_glb": f"{source.stem}_character.glb",
+        "mixamo_motion_bvh": f"{source.stem}.bvh",
+        "diagnostics": f"{source.stem}_diagnostics.json",
+    }
+    for filename in outputs.values():
+        (directory / filename).write_bytes(model.encode())
+    (directory / outputs["diagnostics"]).write_text(json.dumps({
+        "source": outputs["mixamo_character_glb"], "frame_count": 2,
+        "summary": {"self_intersection": {"issue_count": 0, "frame_count": 0}},
+    }))
+    return write_run_json(directory, {
+        "status": "completed", "video": str(source), "rig": str(rig),
+        "extractor": model, "hands": hands, "outputs": outputs,
+        "n_frames": 2, "fps": 30,
+        "source_sha256": file_digest(source), "rig_sha256": file_digest(rig),
+    })
+
+
+class IdempotentOutputTests(unittest.TestCase):
+    def test_removing_model_previews_preserves_comparison_and_animation(self):
+        from motion2mixamorig.run_report import remove_video_previews
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source, rig, output = root / "clip.mp4", root / "rig.fbx", root / "gvhmr"
+            source.write_bytes(b"source")
+            rig.write_bytes(b"rig")
+            report_path = completed_fixture(output, source, rig, "gvhmr")
+            report = json.loads(report_path.read_text())
+            report["outputs"]["videos"] = {"compare": "clip_compare.mp4"}
+            write_run_json(output, report)
+            comparison = root / "clip_compare.mp4"
+            comparison.write_bytes(b"three models")
+            (output / "clip_compare.mp4").write_bytes(b"one model")
+            remove_video_previews(output)
+            self.assertFalse((output / "clip_compare.mp4").exists())
+            self.assertEqual(comparison.read_bytes(), b"three models")
+            updated = json.loads(report_path.read_text())
+            self.assertNotIn("videos", updated["outputs"])
+            self.assertTrue(all((output / name).is_file() for name in updated["outputs"].values()))
+            updated["outputs"]["videos"] = {"compare": "../clip_compare.mp4"}
+            write_run_json(output, updated)
+            with self.assertRaisesRegex(ValueError, "invalid preview filename"):
+                remove_video_previews(output)
+            self.assertTrue(comparison.is_file())
+
+    def test_old_previews_refresh_without_rebuilding_animation(self):
+        from motion2mixamorig import pipeline, preview
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source, rig, output = root / "clip.mp4", root / "rig.fbx", root / "result"
+            source.write_bytes(b"source")
+            rig.write_bytes(b"rig")
+            report_path = completed_fixture(output, source, rig, "gvhmr")
+            report = json.loads(report_path.read_text())
+            report["foot_lock"] = None
+            write_run_json(output, report)
+            with patch.object(preview, "render_saved_preview") as render, patch.object(
+                pipeline, "build_animation",
+            ) as build, redirect_stdout(io.StringIO()):
+                self.assertEqual(pipeline.run_pipeline(source, rig, output_dir=output), output)
+            render.assert_called_once_with(output, verbose=True)
+            build.assert_not_called()
+
+    def test_foot_lock_reuse_checks_request_not_contact_outcome(self):
+        from motion2mixamorig.run_report import completed_run
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source, rig, output = root / "clip.mp4", root / "rig.fbx", root / "result"
+            source.write_bytes(b"source")
+            rig.write_bytes(b"rig")
+            report_path = completed_fixture(output, source, rig, "gvhmr")
+            report = json.loads(report_path.read_text())
+            report["foot_lock"] = {"enabled": False}
+            write_run_json(output, report)
+            self.assertIsNotNone(completed_run(output, source, rig, "gvhmr", foot_lock=True))
+            report["foot_lock_requested"] = False
+            write_run_json(output, report)
+            with self.assertRaisesRegex(ValueError, "foot lock differs"):
+                completed_run(output, source, rig, "gvhmr", foot_lock=True)
+
+    def test_pipeline_reuses_complete_output_and_force_invokes_extraction(self):
+        from motion2mixamorig import pipeline
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source, rig, output = root / "clip.mp4", root / "rig.fbx", root / "result"
+            source.write_bytes(b"source")
+            rig.write_bytes(b"rig")
+            completed_fixture(output, source, rig, "gvhmr", "hamer")
+            extractor = Mock()
+            extractor.extract.side_effect = RuntimeError("extraction invoked")
+            with patch.object(pipeline, "get_extractor", return_value=extractor), redirect_stdout(io.StringIO()):
+                self.assertEqual(pipeline.run_pipeline(source, rig, output_dir=output, no_preview=True), output)
+                extractor.extract.assert_not_called()
+                with self.assertRaisesRegex(RuntimeError, "extraction invoked"):
+                    pipeline.run_pipeline(source, rig, output_dir=output, no_preview=True, force=True)
+                extractor.extract.assert_called_once()
+
+    def test_changed_rig_is_not_silently_reused(self):
+        from motion2mixamorig import pipeline
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source, rig, output = root / "clip.mp4", root / "rig.fbx", root / "result"
+            source.write_bytes(b"source")
+            rig.write_bytes(b"rig")
+            completed_fixture(output, source, rig, "gvhmr")
+            rig.write_bytes(b"changed rig")
+            with self.assertRaisesRegex(ValueError, "--force"), redirect_stdout(io.StringIO()):
+                pipeline.run_pipeline(source, rig, output_dir=output, no_preview=True)
+
+    def test_missing_export_reuses_existing_skeleton_not_inference(self):
+        from motion2mixamorig import pipeline
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source, rig, output = root / "clip.mp4", root / "rig.fbx", root / "result"
+            source.write_bytes(b"source")
+            rig.write_bytes(b"rig")
+            completed_fixture(output, source, rig, "gvhmr")
+            (output / "clip_character.glb").unlink()
+            extractor = Mock()
+            with patch.object(pipeline, "get_extractor", return_value=extractor), patch.object(
+                pipeline, "load_human_motion", side_effect=RuntimeError("loading saved skeleton"),
+            ), self.assertRaisesRegex(RuntimeError, "loading saved skeleton"), redirect_stdout(io.StringIO()):
+                pipeline.run_pipeline(source, rig, output_dir=output, no_preview=True)
+            extractor.extract.assert_not_called()
+
+    def test_benchmark_fills_only_missing_model_and_reuses_comparison(self):
+        from motion2mixamorig import benchmark, comparison
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source, rig, output = root / "clip.mp4", root / "rig.fbx", root / "outputs" / "clip"
+            source.write_bytes(b"source")
+            rig.write_bytes(b"rig")
+            completed_fixture(output / "gvhmr", source, rig, "gvhmr", "hamer")
+            saved_run = output / "gvhmr" / "clip_run.json"
+            old = json.loads(saved_run.read_text())
+            old["outputs"]["videos"] = {"compare": "clip_compare.mp4"}
+            write_run_json(saved_run.parent, old)
+            (saved_run.parent / "clip_compare.mp4").write_bytes(b"obsolete single preview")
+            completed_fixture(output / "flowhmr", source, rig, "flowhmr", "flowhmr")
+            ready = Mock()
+            ready.check.return_value = []
+
+            def generate(video, rig, **kwargs):
+                model = kwargs["extractor"]
+                directory = kwargs["output_dir"]
+                completed_fixture(directory, video, rig, model, "hamer" if model == "gvhmr" else model)
+                return directory
+
+            def render(video, rig, runs, destination):
+                destination.write_bytes(b"preview")
+                return destination
+
+            with patch.object(paths, "OUTPUTS", root / "outputs"), patch.multiple(
+                benchmark, get_extractor=Mock(return_value=ready), summarize_run=Mock(return_value={}),
+            ), patch.multiple(
+                benchmark.checks, check_video=Mock(return_value=None), check_rig=Mock(return_value=None),
+            ), patch("motion2mixamorig.pipeline.run_pipeline", side_effect=generate) as run, patch.object(
+                comparison, "render_model_comparison", side_effect=render,
+            ) as preview, redirect_stdout(io.StringIO()):
+                report = benchmark.run_benchmark(source, rig)
+                self.assertEqual(report.parent, output)
+                self.assertEqual(run.call_count, 1)
+                self.assertEqual(run.call_args.kwargs["extractor"], "exmr")
+                self.assertFalse((saved_run.parent / "clip_compare.mp4").exists())
+                benchmark.run_benchmark(source, rig)
+                self.assertEqual(run.call_count, 1)
+                self.assertEqual(preview.call_count, 1)
+                saved = json.loads(report.read_text())
+                saved["preview"].pop("presentation_version")
+                report.write_text(json.dumps(saved))
+                benchmark.run_benchmark(source, rig)
+                self.assertEqual(run.call_count, 1)
+                self.assertEqual(preview.call_count, 2)
+                benchmark.run_benchmark(source, rig, force=True)
+                self.assertEqual(run.call_count, 4)
+                self.assertEqual(preview.call_count, 3)
+            self.assertFalse(any(path.name.startswith("202") for path in output.iterdir()))
+
+
 class RunFileTests(unittest.TestCase):
+    def test_selected_person_track_is_copied_with_portable_report_reference(self):
+        from motion2mixamorig.run_report import copy_run_deliveries
+        from motion2mixamorig.source_metadata import save_source_metadata
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source, rig = root / "clip.mp4", root / "rig.fbx"
+            source.write_bytes(b"source")
+            rig.write_bytes(b"rig")
+            old, new = root / "old", root / "new"
+            path = completed_fixture(old, source, rig, "gvhmr", "hamer")
+            report = json.loads(path.read_text())
+            report["outputs"]["person_track"] = "clip_person_track.npz"
+            (old / "clip_person_track.npz").write_bytes(b"selected track")
+            write_run_json(old, report)
+            copied = copy_run_deliveries(old, new, source, save_source_metadata(source, root))
+            self.assertEqual((new / copied["outputs"]["person_track"]).read_bytes(), b"selected track")
+            self.assertEqual(copied["person_track"], str(new / "clip_person_track.npz"))
+
     def test_prefixed_report_and_failed_report_merge(self):
         with tempfile.TemporaryDirectory() as tmp:
             directory = Path(tmp)
@@ -64,6 +276,7 @@ class PipelineLayoutTests(unittest.TestCase):
                 directory = Path(tmp)
                 source = directory / ("pose.v1.jpg" if image_input else "dance.v1.mp4")
                 source.touch()
+                (directory / "rig.fbx").touch()
                 run_dir = directory / "result"
                 motion = SimpleNamespace(n_frames=2, fps=30, foot_contact=None)
                 anim = SimpleNamespace(
@@ -86,6 +299,8 @@ class PipelineLayoutTests(unittest.TestCase):
                     return {"summary": {"self_intersection": {}}}
 
                 def preview(anim, asset, calibration, source, out, **kwargs):
+                    from motion2mixamorig.presentation import VIEW_VERSION
+                    anim.presentation_view = SimpleNamespace(metadata=lambda: {"version": VIEW_VERSION})
                     suffix = ".png" if image_input else ".mp4"
                     path = out / f"{source.stem}_compare{suffix}"
                     path.write_bytes(b"preview")
